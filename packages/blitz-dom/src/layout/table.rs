@@ -344,6 +344,12 @@ pub(crate) fn build_table_context(
             }
         }
     }
+    // A table whose children are all block-level boxes (anonymous cells —
+    // see `collect_table_cells`) discovers no columns; give it one
+    // full-width column so the stacked boxes fill the table.
+    if column_sizes.is_empty() && !cells.is_empty() {
+        column_sizes.push(style_helpers::percent(1.0));
+    }
 
     style.grid_template_columns = column_sizes.into_iter().map(|dim| dim.into()).collect();
     // A row's `height` is a minimum: the row grows to fit the content of its cells.
@@ -741,12 +747,39 @@ fn collect_table_cells(
         | DisplayInside::Flex
         | DisplayInside::Grid
         | DisplayInside::GridLanes => {
-            node.remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
-            // Probably a table caption: ignore
-            // println!(
-            //     "Warning: ignoring non-table typed descendent of table ({:?})",
-            //     display.inside()
-            // );
+            // CSS 2.2 §17.2.1: a block-level box whose parent is a table
+            // or table-row gets wrapped in an anonymous table-cell. HTML
+            // emails rely on this: responsive templates switch cells to
+            // `display:block` below a width breakpoint to stack table
+            // columns vertically. Approximate the anonymous cell by
+            // placing each such box on its own full-width grid row
+            // (upstream drops these boxes entirely, collapsing such emails
+            // to a blank sliver). The box is not placed through the column
+            // cursor, so it neither adds columns nor occupies any.
+            *row += 1;
+            cursor.start_row();
+            rows.push(TableRow {
+                node_id,
+                group: None,
+                height: None,
+                is_constrained: false,
+            });
+            let stylo_style = &node.primary_styles().unwrap();
+            let mut style = table_taffy_style(stylo_style, wm);
+            style.grid_column = taffy::Line {
+                start: style_helpers::line(1),
+                end: style_helpers::line(-1),
+            };
+            style.grid_row = taffy::Line {
+                start: style_helpers::line(*row as i16),
+                end: style_helpers::span(1),
+            };
+            cells.push(TableCell {
+                node_id,
+                row: row.saturating_sub(1),
+                column: 0,
+                style,
+            });
         }
         DisplayInside::TableColumnGroup | DisplayInside::TableColumn | DisplayInside::Table => {
             node.remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
