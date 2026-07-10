@@ -4,6 +4,7 @@ use atomic_refcell::AtomicRefCell;
 use markup5ever::local_name;
 use style::properties::style_structs::Border;
 use style::servo_arc::Arc as ServoArc;
+use style::values::computed::{BorderSideWidth, BorderStyle};
 use style::values::specified::box_::{DisplayInside, DisplayOutside};
 use style::{
     Atom, computed_values::border_collapse::T as BorderCollapse,
@@ -53,6 +54,31 @@ pub struct TableRow {
     pub height: f32,
 }
 
+/// The used width of one border side: zero when the side's style is
+/// `none`/`hidden`. Stylo keeps the *computed* width (the initial `medium`
+/// resolves to 3px) even for borderless sides, so reading the width without
+/// checking the style gives every borderless side a phantom 3px border.
+fn used_border_width(style: BorderStyle, width: &BorderSideWidth) -> f32 {
+    if style.none_or_hidden() {
+        0.0
+    } else {
+        width.0.to_f32_px()
+    }
+}
+
+/// The widths a border contributes to the collapsed border grid, per axis:
+/// x is its widest visible left/right side, y its widest visible top/bottom
+/// side.
+fn collapsed_axis_widths(border: &Border) -> (f32, f32) {
+    let x = used_border_width(border.border_left_style, &border.border_left_width).max(
+        used_border_width(border.border_right_style, &border.border_right_width),
+    );
+    let y = used_border_width(border.border_top_style, &border.border_top_width).max(
+        used_border_width(border.border_bottom_style, &border.border_bottom_width),
+    );
+    (x, y)
+}
+
 pub(crate) fn build_table_context(
     doc: &mut BaseDocument,
     table_root_node_id: usize,
@@ -88,11 +114,13 @@ pub(crate) fn build_table_context(
 
     let border_collapse = stylo_styles.clone_border_collapse();
     let border_spacing = stylo_styles.clone_border_spacing().0;
+    let table_border = stylo_styles.clone_border();
 
     drop(stylo_styles);
 
     let mut column_sizes: Vec<taffy::TrackSizingFunction> = Vec::new();
     let mut first_cell_border: Option<ServoArc<Border>> = None;
+    let mut first_row_border: Option<ServoArc<Border>> = None;
     for child_id in children.iter().copied() {
         collect_table_cells(
             doc,
@@ -105,6 +133,7 @@ pub(crate) fn build_table_context(
             &mut rows,
             &mut column_sizes,
             &mut first_cell_border,
+            &mut first_row_border,
         );
     }
     column_sizes.resize(col as usize, style_helpers::auto());
@@ -118,39 +147,65 @@ pub(crate) fn build_table_context(
     style.grid_template_columns = column_sizes.into_iter().map(|dim| dim.into()).collect();
     style.grid_template_rows = vec![style_helpers::auto(); row as usize];
 
-    style.gap = match border_collapse {
-        BorderCollapse::Separate => taffy::Size {
-            width: style_helpers::length(border_spacing.width.px()),
-            height: style_helpers::length(border_spacing.height.px()),
-        },
-        BorderCollapse::Collapse => first_cell_border
-            .as_ref()
-            .map(|border| {
-                let x = border
-                    .border_left_width
-                    .0
-                    .max(border.border_right_width.0)
-                    .to_f32_px();
-                let y = border
-                    .border_top_width
-                    .0
-                    .max(border.border_bottom_width.0)
-                    .to_f32_px();
-                taffy::Size {
-                    width: style_helpers::length(x),
-                    height: style_helpers::length(y),
-                }
-            })
-            .unwrap_or(taffy::Size::ZERO.map(style_helpers::length)),
-    };
+    match border_collapse {
+        BorderCollapse::Separate => {
+            style.gap = taffy::Size {
+                width: style_helpers::length(border_spacing.width.px()),
+                height: style_helpers::length(border_spacing.height.px()),
+            };
+        }
+        BorderCollapse::Collapse => {
+            // Approximate the collapsed border grid: vertical lines take the
+            // first cell's widest visible left/right border, horizontal lines
+            // the wider of that cell's top/bottom border and the first
+            // visible row border.
+            let (cell_x, cell_y) = first_cell_border
+                .as_deref()
+                .map(collapsed_axis_widths)
+                .unwrap_or((0.0, 0.0));
+            let row_y = first_row_border
+                .as_deref()
+                .map(|border| collapsed_axis_widths(border).1)
+                .unwrap_or(0.0);
+            let (grid_x, grid_y) = (cell_x, cell_y.max(row_y));
+            style.gap = taffy::Size {
+                width: style_helpers::length(grid_x),
+                height: style_helpers::length(grid_y),
+            };
 
-    if border_collapse == BorderCollapse::Collapse {
-        style.border = taffy::Rect {
-            left: style.gap.width,
-            right: style.gap.width,
-            top: style.gap.height,
-            bottom: style.gap.height,
-        };
+            // A collapsed table's outer edge is the wider of the table's own
+            // border and the grid line for that axis; `hidden` on the table's
+            // side suppresses the edge entirely (CSS 2.2 §17.6.2.1).
+            let edge = |side_style: BorderStyle, side_width: &BorderSideWidth, grid: f32| {
+                if side_style == BorderStyle::Hidden {
+                    style_helpers::length(0.0)
+                } else {
+                    style_helpers::length(used_border_width(side_style, side_width).max(grid))
+                }
+            };
+            style.border = taffy::Rect {
+                left: edge(
+                    table_border.border_left_style,
+                    &table_border.border_left_width,
+                    grid_x,
+                ),
+                right: edge(
+                    table_border.border_right_style,
+                    &table_border.border_right_width,
+                    grid_x,
+                ),
+                top: edge(
+                    table_border.border_top_style,
+                    &table_border.border_top_width,
+                    grid_y,
+                ),
+                bottom: edge(
+                    table_border.border_bottom_style,
+                    &table_border.border_bottom_width,
+                    grid_y,
+                ),
+            };
+        }
     }
 
     let layout_children = cells.iter().map(|cell| cell.node_id).collect();
@@ -182,6 +237,7 @@ pub(crate) fn collect_table_cells(
     rows: &mut Vec<TableRow>,
     columns: &mut Vec<TrackSizingFunction>,
     first_cell_border: &mut Option<ServoArc<Border>>,
+    first_row_border: &mut Option<ServoArc<Border>>,
 ) {
     let node = &mut doc.nodes[node_id];
 
@@ -220,6 +276,7 @@ pub(crate) fn collect_table_cells(
                     rows,
                     columns,
                     first_cell_border,
+                    first_row_border,
                 );
             }
             doc.nodes[node_id].children = children;
@@ -228,6 +285,17 @@ pub(crate) fn collect_table_cells(
             node.remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
             *row += 1;
             *col = 0;
+
+            // Remember the first row with a visible horizontal border: rows
+            // contribute the horizontal lines of the collapsed border grid
+            // (the `tr { border-bottom: … }` separator pattern is common in
+            // HTML emails).
+            if first_row_border.is_none() {
+                let border = node.primary_styles().unwrap().clone_border();
+                if collapsed_axis_widths(&border).1 > 0.0 {
+                    *first_row_border = Some(border);
+                }
+            }
 
             rows.push(TableRow {
                 node_id,
@@ -247,6 +315,7 @@ pub(crate) fn collect_table_cells(
                     rows,
                     columns,
                     first_cell_border,
+                    first_row_border,
                 );
             }
             doc.nodes[node_id].children = children;

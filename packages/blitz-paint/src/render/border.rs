@@ -4,11 +4,51 @@ use kurbo::{BezPath, Cap, Circle, Insets, Join, PathEl, Point, Rect, Shape as _,
 use peniko::{Color, Fill};
 use smallvec::SmallVec;
 use style::{
+    color::AbsoluteColor,
     computed_values::border_collapse::T as BorderCollapse,
-    values::computed::{BorderStyle, OutlineStyle},
+    values::computed::{BorderSideWidth, BorderStyle, Color as StyloColor, OutlineStyle},
 };
 
 use crate::{color::ToColorColor as _, kurbo_css::Edge, render::ElementCx};
+
+/// One side of a stylo border as a collapsed-border-grid candidate: its used
+/// width and resolved color, or `None` when the side is `none`/`hidden` or
+/// zero-width. Stylo keeps the *computed* width (the initial `medium`
+/// resolves to 3px) even for borderless sides, so the style check is what
+/// keeps a borderless collapsed table from painting a phantom 3px grid.
+fn collapsed_edge(
+    side_style: BorderStyle,
+    width: &BorderSideWidth,
+    color: &StyloColor,
+    current_color: &AbsoluteColor,
+) -> Option<(f64, Color)> {
+    if side_style.none_or_hidden() {
+        return None;
+    }
+    let width = width.0.to_f64_px();
+    if width <= 0.0 {
+        return None;
+    }
+    Some((
+        width,
+        color.resolve_to_absolute(current_color).as_srgb_color(),
+    ))
+}
+
+/// The winning collapsed-border candidate: the widest one, with later
+/// candidates winning ties — pass candidates lowest-precedence-first
+/// (table < row < cell, CSS 2.2 §17.6.2.1).
+fn collapsed_winner(
+    candidates: impl IntoIterator<Item = Option<(f64, Color)>>,
+) -> Option<(f64, Color)> {
+    candidates
+        .into_iter()
+        .flatten()
+        .fold(None, |acc, candidate| match acc {
+            Some((width, _)) if width > candidate.0 => acc,
+            _ => Some(candidate),
+        })
+}
 
 /// The WCAG contrast ratio (>= 1) between two colours, matching Chrome's
 /// `color_utils::GetContrastRatio`.
@@ -527,11 +567,6 @@ impl ElementCx<'_, '_> {
         let Some(grid_info) = &mut *table.computed_grid_info.borrow_mut() else {
             return;
         };
-        let Some(border_style) = table.border_style.as_deref() else {
-            return;
-        };
-
-        let outer_border_style = self.style.get_border();
 
         let cols = &grid_info.columns;
         let rows = &grid_info.rows;
@@ -541,66 +576,182 @@ impl ElementCx<'_, '_> {
         let inner_height =
             (rows.sizes.iter().sum::<f32>() + rows.gutters.iter().sum::<f32>()) as f64;
 
-        // TODO: support different colors for different borders
+        // Approximate CSS collapsed-border conflict resolution (blitz does
+        // not track per-edge winners): the first cell's border stands in for
+        // every cell and each edge takes the widest visible candidate, so
+        // e.g. a 10px white cell border paints white instead of borrowing
+        // the top border's color, and borderless sides paint nothing at all.
         let current_color = self.style.clone_color();
-        let border_color = border_style
-            .border_top_color
-            .resolve_to_absolute(&current_color)
-            .as_srgb_color();
+        let cell_border = table.border_style.as_deref();
 
-        // No need to draw transparent borders (as they won't be visible anyway)
-        if border_color == Color::TRANSPARENT {
-            return;
-        }
+        // The first cell's candidate for vertical grid lines (left/right
+        // sides) and horizontal ones (top/bottom sides).
+        let cell_x = collapsed_winner(cell_border.iter().flat_map(|border| {
+            [
+                collapsed_edge(
+                    border.border_left_style,
+                    &border.border_left_width,
+                    &border.border_left_color,
+                    &current_color,
+                ),
+                collapsed_edge(
+                    border.border_right_style,
+                    &border.border_right_width,
+                    &border.border_right_color,
+                    &current_color,
+                ),
+            ]
+        }));
+        let cell_y = collapsed_winner(cell_border.iter().flat_map(|border| {
+            [
+                collapsed_edge(
+                    border.border_top_style,
+                    &border.border_top_width,
+                    &border.border_top_color,
+                    &current_color,
+                ),
+                collapsed_edge(
+                    border.border_bottom_style,
+                    &border.border_bottom_width,
+                    &border.border_bottom_color,
+                    &current_color,
+                ),
+            ]
+        }));
 
-        let border_width = border_style.border_top_width.0.to_f64_px();
+        // A row's candidate for the horizontal grid line above (its top
+        // border) or below it (its bottom border).
+        let row_edge = |row_index: usize, top: bool| -> Option<(f64, Color)> {
+            let row = table.rows.get(row_index)?;
+            let node = self.context.dom.get_node(row.node_id)?;
+            let styles = node.primary_styles()?;
+            let border = styles.get_border();
+            let row_color = styles.clone_color();
+            if top {
+                collapsed_edge(
+                    border.border_top_style,
+                    &border.border_top_width,
+                    &border.border_top_color,
+                    &row_color,
+                )
+            } else {
+                collapsed_edge(
+                    border.border_bottom_style,
+                    &border.border_bottom_width,
+                    &border.border_bottom_color,
+                    &row_color,
+                )
+            }
+        };
 
-        // Draw horizontal inner borders
+        // Draw horizontal inner borders. `rows.gutters[i]` precedes row `i`,
+        // so the line between two rows takes the facing borders of both.
         let mut y = 0.0;
-        for (&height, &gutter) in rows.sizes.iter().zip(rows.gutters.iter()) {
-            let shape =
-                Rect::new(0.0, y, inner_width, y + gutter as f64).scale_from_origin(self.scale);
-            scene.fill(Fill::NonZero, self.transform, border_color, None, &shape);
-
+        for (i, (&height, &gutter)) in rows.sizes.iter().zip(rows.gutters.iter()).enumerate() {
+            if gutter > 0.0 {
+                let winner = collapsed_winner([
+                    i.checked_sub(1).and_then(|above| row_edge(above, false)),
+                    row_edge(i, true),
+                    cell_y,
+                ]);
+                if let Some((_, color)) = winner {
+                    let shape = Rect::new(0.0, y, inner_width, y + gutter as f64)
+                        .scale_from_origin(self.scale);
+                    scene.fill(Fill::NonZero, self.transform, color, None, &shape);
+                }
+            }
             y += (height + gutter) as f64;
         }
 
-        // Draw horizontal outer borders
+        // Draw vertical inner borders
+        if let Some((_, color)) = cell_x {
+            let mut x = 0.0;
+            for (&width, &gutter) in cols.sizes.iter().zip(cols.gutters.iter()) {
+                if gutter > 0.0 {
+                    let shape = Rect::new(x, 0.0, x + gutter as f64, inner_height)
+                        .scale_from_origin(self.scale);
+                    scene.fill(Fill::NonZero, self.transform, color, None, &shape);
+                }
+                x += (width + gutter) as f64;
+            }
+        }
+
+        // Draw outer borders: the wider of the table's own border and the
+        // grid line for that axis, with `hidden` on the table's side
+        // suppressing the edge entirely (CSS 2.2 §17.6.2.1).
+        let outer = self.style.get_border();
+
         // Top border
-        if outer_border_style.border_top_style != BorderStyle::Hidden {
-            let shape =
-                Rect::new(0.0, 0.0, inner_width, border_width).scale_from_origin(self.scale);
-            scene.fill(Fill::NonZero, self.transform, border_color, None, &shape);
+        if outer.border_top_style != BorderStyle::Hidden {
+            let winner = collapsed_winner([
+                collapsed_edge(
+                    outer.border_top_style,
+                    &outer.border_top_width,
+                    &outer.border_top_color,
+                    &current_color,
+                ),
+                row_edge(0, true),
+                cell_y,
+            ]);
+            if let Some((width, color)) = winner {
+                let shape = Rect::new(0.0, 0.0, inner_width, width).scale_from_origin(self.scale);
+                scene.fill(Fill::NonZero, self.transform, color, None, &shape);
+            }
         }
         // Bottom border
-        if outer_border_style.border_bottom_style != BorderStyle::Hidden {
-            let shape = Rect::new(0.0, inner_height, inner_width, inner_height + border_width)
-                .scale_from_origin(self.scale);
-            scene.fill(Fill::NonZero, self.transform, border_color, None, &shape);
+        if outer.border_bottom_style != BorderStyle::Hidden {
+            let winner = collapsed_winner([
+                collapsed_edge(
+                    outer.border_bottom_style,
+                    &outer.border_bottom_width,
+                    &outer.border_bottom_color,
+                    &current_color,
+                ),
+                table
+                    .rows
+                    .len()
+                    .checked_sub(1)
+                    .and_then(|last| row_edge(last, false)),
+                cell_y,
+            ]);
+            if let Some((width, color)) = winner {
+                let shape = Rect::new(0.0, inner_height, inner_width, inner_height + width)
+                    .scale_from_origin(self.scale);
+                scene.fill(Fill::NonZero, self.transform, color, None, &shape);
+            }
         }
-
-        // Draw vertical inner borders
-        let mut x = 0.0;
-        for (&width, &gutter) in cols.sizes.iter().zip(cols.gutters.iter()) {
-            let shape =
-                Rect::new(x, 0.0, x + gutter as f64, inner_height).scale_from_origin(self.scale);
-            scene.fill(Fill::NonZero, self.transform, border_color, None, &shape);
-
-            x += (width + gutter) as f64;
-        }
-
-        // Draw vertical outer borders
         // Left border
-        if outer_border_style.border_left_style != BorderStyle::Hidden {
-            let shape =
-                Rect::new(0.0, 0.0, border_width, inner_height).scale_from_origin(self.scale);
-            scene.fill(Fill::NonZero, self.transform, border_color, None, &shape);
+        if outer.border_left_style != BorderStyle::Hidden {
+            let winner = collapsed_winner([
+                collapsed_edge(
+                    outer.border_left_style,
+                    &outer.border_left_width,
+                    &outer.border_left_color,
+                    &current_color,
+                ),
+                cell_x,
+            ]);
+            if let Some((width, color)) = winner {
+                let shape = Rect::new(0.0, 0.0, width, inner_height).scale_from_origin(self.scale);
+                scene.fill(Fill::NonZero, self.transform, color, None, &shape);
+            }
         }
         // Right border
-        if outer_border_style.border_right_style != BorderStyle::Hidden {
-            let shape = Rect::new(inner_width, 0.0, inner_width + border_width, inner_height)
-                .scale_from_origin(self.scale);
-            scene.fill(Fill::NonZero, self.transform, border_color, None, &shape);
+        if outer.border_right_style != BorderStyle::Hidden {
+            let winner = collapsed_winner([
+                collapsed_edge(
+                    outer.border_right_style,
+                    &outer.border_right_width,
+                    &outer.border_right_color,
+                    &current_color,
+                ),
+                cell_x,
+            ]);
+            if let Some((width, color)) = winner {
+                let shape = Rect::new(inner_width, 0.0, inner_width + width, inner_height)
+                    .scale_from_origin(self.scale);
+                scene.fill(Fill::NonZero, self.transform, color, None, &shape);
+            }
         }
     }
 
