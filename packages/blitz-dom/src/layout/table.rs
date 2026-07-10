@@ -120,7 +120,7 @@ pub(crate) fn build_table_context(
 
     let mut column_sizes: Vec<taffy::TrackSizingFunction> = Vec::new();
     let mut first_cell_border: Option<ServoArc<Border>> = None;
-    let mut first_row_border: Option<ServoArc<Border>> = None;
+    let mut first_row_border_y: Option<f32> = None;
     for child_id in children.iter().copied() {
         collect_table_cells(
             doc,
@@ -133,7 +133,7 @@ pub(crate) fn build_table_context(
             &mut rows,
             &mut column_sizes,
             &mut first_cell_border,
-            &mut first_row_border,
+            &mut first_row_border_y,
         );
     }
     column_sizes.resize(col as usize, style_helpers::auto());
@@ -163,11 +163,7 @@ pub(crate) fn build_table_context(
                 .as_deref()
                 .map(collapsed_axis_widths)
                 .unwrap_or((0.0, 0.0));
-            let row_y = first_row_border
-                .as_deref()
-                .map(|border| collapsed_axis_widths(border).1)
-                .unwrap_or(0.0);
-            let (grid_x, grid_y) = (cell_x, cell_y.max(row_y));
+            let (grid_x, grid_y) = (cell_x, cell_y.max(first_row_border_y.unwrap_or(0.0)));
             style.gap = taffy::Size {
                 width: style_helpers::length(grid_x),
                 height: style_helpers::length(grid_y),
@@ -237,7 +233,7 @@ pub(crate) fn collect_table_cells(
     rows: &mut Vec<TableRow>,
     columns: &mut Vec<TrackSizingFunction>,
     first_cell_border: &mut Option<ServoArc<Border>>,
-    first_row_border: &mut Option<ServoArc<Border>>,
+    first_row_border_y: &mut Option<f32>,
 ) {
     let node = &mut doc.nodes[node_id];
 
@@ -276,7 +272,7 @@ pub(crate) fn collect_table_cells(
                     rows,
                     columns,
                     first_cell_border,
-                    first_row_border,
+                    first_row_border_y,
                 );
             }
             doc.nodes[node_id].children = children;
@@ -286,14 +282,14 @@ pub(crate) fn collect_table_cells(
             *row += 1;
             *col = 0;
 
-            // Remember the first row with a visible horizontal border: rows
-            // contribute the horizontal lines of the collapsed border grid
-            // (the `tr { border-bottom: … }` separator pattern is common in
-            // HTML emails).
-            if first_row_border.is_none() {
-                let border = node.primary_styles().unwrap().clone_border();
-                if collapsed_axis_widths(&border).1 > 0.0 {
-                    *first_row_border = Some(border);
+            // Remember the width of the first visible horizontal row border:
+            // rows contribute the horizontal lines of the collapsed border
+            // grid (the `tr { border-bottom: … }` separator pattern is
+            // common in HTML emails).
+            if first_row_border_y.is_none() {
+                let y = collapsed_axis_widths(&node.primary_styles().unwrap().clone_border()).1;
+                if y > 0.0 {
+                    *first_row_border_y = Some(y);
                 }
             }
 
@@ -315,7 +311,7 @@ pub(crate) fn collect_table_cells(
                     rows,
                     columns,
                     first_cell_border,
-                    first_row_border,
+                    first_row_border_y,
                 );
             }
             doc.nodes[node_id].children = children;
