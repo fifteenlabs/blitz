@@ -1181,6 +1181,25 @@ impl BaseDocument {
 
     pub fn snapshot_node(&mut self, node_id: usize) {
         let node = &mut self.nodes[node_id];
+
+        // A snapshot records an element's pre-mutation state so a restyle can
+        // diff selector matches then-vs-now; an element that has never been
+        // styled has no "then" to diff against. Snapshotting it anyway makes
+        // Stylo's invalidation unwrap its (absent) primary style and panic
+        // (`ElementStyles::primary`), because elements get empty style data at
+        // creation. This is reachable from the parser: html5ever merges a
+        // nested document's `<html>`/`<body>` attributes into the existing
+        // elements via `set_attribute` before the first style pass. The
+        // initial traversal styles the element with its final attributes, so
+        // skipping the snapshot loses nothing.
+        let never_styled = node
+            .stylo_element_data
+            .get()
+            .is_none_or(|data| data.styles.get_primary().is_none());
+        if never_styled {
+            return;
+        }
+
         let opaque_node_id = TNode::opaque(&&*node);
         node.has_snapshot = true;
         node.snapshot_handled
