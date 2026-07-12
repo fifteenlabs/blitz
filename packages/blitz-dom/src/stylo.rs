@@ -914,11 +914,19 @@ impl<'a> TElement for BlitzNode<'a> {
                 }
             }
 
+            // Per https://html.spec.whatwg.org/multipage/rendering.html#tables-2
+            // the height attribute maps to 'height' on tr/td/th as well —
+            // email bar charts (e.g. Sentry's weekly report) are height="N"
+            // cells whose only content is a font-size:0 &nbsp;, so without
+            // this mapping they collapse to zero height.
             if *name == local_name!("height")
                 && (*tag == local_name!("table")
                     || *tag == local_name!("thead")
                     || *tag == local_name!("tbody")
-                    || *tag == local_name!("tfoot"))
+                    || *tag == local_name!("tfoot")
+                    || *tag == local_name!("tr")
+                    || *tag == local_name!("td")
+                    || *tag == local_name!("th"))
             {
                 if let Some(height) = parse_size_attr(value, |_| true) {
                     use style::values::generics::{NonNegative, length::Size};
