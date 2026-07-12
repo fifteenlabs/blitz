@@ -547,6 +547,26 @@ impl BaseDocument {
             node.display_constructed_as = style.clone_display();
             // }
 
+            // Table cells: honor an explicit valign attribute by aligning
+            // the cell's inner block layout (taffy block align-content).
+            // Stylo's servo build has no vertical-align longhand, so this
+            // can't route through CSS; email bar charts depend on it
+            // (`<td valign="bottom" style="height:110px">` columns anchor
+            // their bars to the cell bottom). No attribute = today's
+            // top-flow default, so only explicitly-valigned cells change.
+            if style.clone_display().inside() == style::values::specified::box_::DisplayInside::TableCell
+            {
+                let valign = node
+                    .attr(crate::local_name!("valign"))
+                    .map(str::to_ascii_lowercase);
+                node.style.align_content = match valign.as_deref() {
+                    Some("bottom") => Some(taffy::AlignContent::END),
+                    Some("middle" | "center") => Some(taffy::AlignContent::CENTER),
+                    Some("top") => Some(taffy::AlignContent::START),
+                    _ => node.style.align_content,
+                };
+            }
+
             // In non-incremental mode we unconditionally clear the Taffy cache.
             // In incremental mode this is handled as part of damage propagation.
             if !incremental {
