@@ -554,17 +554,23 @@ impl BaseDocument {
             // (`<td valign="bottom" style="height:110px">` columns anchor
             // their bars to the cell bottom). No attribute = today's
             // top-flow default, so only explicitly-valigned cells change.
-            if style.clone_display().inside() == style::values::specified::box_::DisplayInside::TableCell
+            if node.display_constructed_as.inside()
+                == style::values::specified::box_::DisplayInside::TableCell
             {
-                let valign = node
-                    .attr(crate::local_name!("valign"))
-                    .map(str::to_ascii_lowercase);
-                node.style.align_content = match valign.as_deref() {
-                    Some("bottom") => Some(taffy::AlignContent::END),
-                    Some("middle" | "center") => Some(taffy::AlignContent::CENTER),
-                    Some("top") => Some(taffy::AlignContent::START),
-                    _ => node.style.align_content,
+                let align = match node.attr(crate::local_name!("valign")) {
+                    Some(v) if v.eq_ignore_ascii_case("bottom") => Some(taffy::AlignContent::END),
+                    Some(v)
+                        if v.eq_ignore_ascii_case("middle")
+                            || v.eq_ignore_ascii_case("center") =>
+                    {
+                        Some(taffy::AlignContent::CENTER)
+                    }
+                    Some(v) if v.eq_ignore_ascii_case("top") => Some(taffy::AlignContent::START),
+                    _ => None,
                 };
+                if let Some(align) = align {
+                    node.style.align_content = Some(align);
+                }
             }
 
             // In non-incremental mode we unconditionally clear the Taffy cache.
