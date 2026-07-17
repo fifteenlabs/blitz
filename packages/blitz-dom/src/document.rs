@@ -869,13 +869,19 @@ impl BaseDocument {
         node
     }
 
-    pub(crate) fn resolve_url(&self, raw: &str) -> url::Url {
-        self.url.resolve_relative(raw).unwrap_or_else(|| {
-            panic!(
-                "to be able to resolve {raw} with the base_url: {:?}",
-                *self.url
-            )
-        })
+    /// Resolve a raw (possibly relative) URL against the document's base URL.
+    ///
+    /// Returns `None` when the URL cannot be resolved — e.g. a relative or
+    /// protocol-relative href like `//fonts.googleapis.com/...` when the base
+    /// is a non-hierarchical `data:` URL — so callers can skip the resource
+    /// instead of panicking on untrusted document content.
+    pub(crate) fn resolve_url(&self, raw: &str) -> Option<url::Url> {
+        let resolved = self.url.resolve_relative(raw);
+        #[cfg(feature = "tracing")]
+        if resolved.is_none() {
+            tracing::warn!("Cannot resolve {raw} with the base_url: {:?}", *self.url);
+        }
+        resolved
     }
 
     pub fn print_tree(&self) {
@@ -897,7 +903,9 @@ impl BaseDocument {
                 if let Some(href) = element.attr(local_name!("href")) {
                     // println!("Node {node_id} {href} {href_to_reload} {} {}", resolved_href.as_str(), resolved_href.as_str() == url_to_reload);
                     if href == href_to_reload {
-                        let resolved_href = self.resolve_url(href);
+                        let Some(resolved_href) = self.resolve_url(href) else {
+                            continue;
+                        };
                         self.net_provider.fetch(
                             self.id(),
                             self.build_request(resolved_href.clone()),
