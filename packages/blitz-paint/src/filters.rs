@@ -28,7 +28,10 @@ pub(crate) fn convert_single_filter(filter: &StyloFilter) -> Option<FilterEffect
         StyloFilter::DropShadow(shadow) => FilterEffect::drop_shadow(
             shadow.horizontal.px(),
             shadow.vertical.px(),
-            shadow.blur.px(),
+            // `drop-shadow()`'s third length is a blur radius, interpreted as
+            // `box-shadow`'s is, so the deviation is half of it. `blur()` above
+            // is different: CSS gives that one the deviation directly.
+            shadow.blur.px() * 0.5,
             // TODO: pass in correct currentColor
             shadow
                 .color
