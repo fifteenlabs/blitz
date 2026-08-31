@@ -3,6 +3,7 @@ use crate::color::{Color, ToColorColor as _};
 use anyrender::PaintScene;
 use kurbo::{Rect, Vec2};
 use peniko::{Compose, Fill, Mix};
+use style::values::computed::effects::BoxShadow;
 
 impl ElementCx<'_, '_> {
     pub(super) fn draw_outset_box_shadow(&self, scene: &mut impl PaintScene) {
@@ -24,13 +25,15 @@ impl ElementCx<'_, '_> {
         let needs_clip = opacity < 1.0 || !bg_is_opaque;
 
         let max_shadow_rect = box_shadow.iter().fold(Rect::ZERO, |prev, shadow| {
-            let x = shadow.base.horizontal.px() as f64 * self.scale;
-            let y = shadow.base.vertical.px() as f64 * self.scale;
-            let blur = shadow.base.blur.px() as f64 * self.scale;
             let spread = shadow.spread.px() as f64 * self.scale;
-            let offset = spread + blur * 2.5;
+            // A gaussian is indistinguishable from zero beyond five standard deviations, so
+            // that is how far past the spread rect the blurred edge can still ink. The
+            // deviation has to come from the same helper the drawing below uses, or the clip
+            // and the shadow it clips are sized by two different definitions of "blur".
+            let reach = spread + std_dev(shadow.base.blur.px(), self.scale) * 5.0;
 
-            let rect = self.frame.border_box.inflate(offset, offset) + Vec2::new(x, y);
+            let rect =
+                self.frame.border_box.inflate(reach, reach) + shadow_offset(shadow, self.scale);
 
             prev.union(rect)
         });
@@ -53,10 +56,9 @@ impl ElementCx<'_, '_> {
 
                     let alpha = shadow_color.components[3];
                     if alpha != 0.0 {
-                        let transform = self.transform.then_translate(Vec2 {
-                            x: shadow.base.horizontal.px() as f64 * self.scale,
-                            y: shadow.base.vertical.px() as f64 * self.scale,
-                        });
+                        let transform = self
+                            .transform
+                            .then_translate(shadow_offset(shadow, self.scale));
 
                         // TODO draw shadows with matching individual radii instead of averaging
                         let radius = self.frame.border_radii.average();
@@ -100,10 +102,9 @@ impl ElementCx<'_, '_> {
 
             // TODO draw shadows with matching individual radii instead of averaging
             let radius = self.frame.border_radii.average();
-            let transform = self.transform.then_translate(Vec2 {
-                x: shadow.base.horizontal.px() as f64 * self.scale,
-                y: shadow.base.vertical.px() as f64 * self.scale,
-            });
+            let transform = self
+                .transform
+                .then_translate(shadow_offset(shadow, self.scale));
 
             scene.push_layer(Mix::Normal, 1.0, self.transform, &padding_box, None, None);
             scene.fill(
@@ -147,4 +148,12 @@ impl ElementCx<'_, '_> {
 /// `self.scale`, so this one has to be too.
 fn std_dev(blur: f32, scale: f64) -> f64 {
     blur as f64 * 0.5 * scale
+}
+
+/// A shadow's `<offset-x> <offset-y>`, in those same device pixels.
+fn shadow_offset(shadow: &BoxShadow, scale: f64) -> Vec2 {
+    Vec2::new(
+        shadow.base.horizontal.px() as f64 * scale,
+        shadow.base.vertical.px() as f64 * scale,
+    )
 }
