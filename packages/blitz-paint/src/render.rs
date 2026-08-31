@@ -630,8 +630,22 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
                 effect_layer_clip.x1 += filter_expansion_area.x1;
                 effect_layer_clip.y1 += filter_expansion_area.y1;
 
+                // A filter renders into a bounded region (the border box grown by the expansion
+                // above), so it keeps clipping. `opacity` on its own establishes a stacking
+                // context but no clip: only `overflow` (or paint containment, or replaced
+                // content) clips. Where nothing clips, grow the layer to the subtree's
+                // scrollable-overflow rect so a descendant hanging outside the border box (the
+                // badge overlapping a card below it) is still painted. That rect is bounded and
+                // already computed - it is what culls this element above - so backends that
+                // allocate a target for the layer still get a finite one. It tracks layout, not
+                // ink, so descendant ink overflow (a child's box shadow) is still clipped; that
+                // is no worse than the border box it replaces, which is a subset of it.
+                if !should_clip && filter.is_none() && backdrop_filter.is_none() {
+                    effect_layer_clip = effect_layer_clip.union(overflow);
+                }
+
                 // Opacity/Filter layer if box has opacity or a filter.
-                // Clipped to border-box as it needs to include the background and borders.
+                // Covers at least the border box as it needs to include the background and borders.
                 self.layer_manager.maybe_with_layer(
                     scene,
                     has_opacity || filter.is_some() || backdrop_filter.is_some(),
@@ -653,7 +667,6 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
                         }
                         cx.stroke_devtools(scene);
 
-                        // TODO: allow layers with opacity to be unclipped (overflow: visible)
                         let clip = if is_text_input {
                             &cx.frame.text_input_clip_path()
                         } else {
