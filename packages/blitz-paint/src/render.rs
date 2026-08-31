@@ -246,12 +246,18 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
         // The root element's overflow is propagated to the viewport (which is clipped by the
         // window/surface bounds), so the root element must not clip its own overflow.
         let is_root_element = self.root_element_id == Some(node_id);
-        let should_clip = !is_root_element
-            && (is_image
-                || is_sub_doc
-                || is_text_input
-                || !matches!(overflow_x, Overflow::Visible)
-                || !matches!(overflow_y, Overflow::Visible));
+        // Replaced content (images, sub-documents, text inputs) is always clipped to its box,
+        // whatever `overflow` says.
+        let clips_replaced_content = is_image || is_sub_doc || is_text_input;
+        // Tracked per axis: only a computed `overflow` other than `visible` clips, and it does
+        // so in its own axis. (CSS forces the other axis to a non-`visible` value, so in
+        // practice these two agree, but nothing here depends on that.)
+        let clips_x = !is_root_element
+            && (clips_replaced_content || !matches!(overflow_x, Overflow::Visible));
+        let clips_y = !is_root_element
+            && (clips_replaced_content || !matches!(overflow_y, Overflow::Visible));
+        // TODO: clip the content box per axis rather than in both axes as soon as either clips
+        let should_clip = clips_x || clips_y;
 
         // Apply padding/border offset to inline root
         let taffy::Layout {
@@ -377,8 +383,29 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
                 effect_layer_clip.x1 += filter_expansion_area.x1;
                 effect_layer_clip.y1 += filter_expansion_area.y1;
 
+                // A filter renders into a bounded region (the border box grown by the expansion
+                // above), so it keeps clipping. `opacity` on its own establishes a stacking
+                // context but no clip: only `overflow` clips, and only in the axis it applies
+                // to. Where overflow is visible, grow the layer to the subtree's
+                // scrollable-overflow rect so a descendant hanging outside the border box (the
+                // badge overlapping a card below it) is still painted. That rect is bounded and
+                // already computed - it is what culls this element above - so backends that
+                // allocate a target for the layer still get a finite one. It tracks layout, not
+                // ink, so descendant ink overflow (a child's box shadow) is still clipped; that
+                // is no worse than the border box it replaces, which is a subset of it.
+                if filter.is_none() && backdrop_filter.is_none() {
+                    if !clips_x {
+                        effect_layer_clip.x0 = effect_layer_clip.x0.min(overflow.x0);
+                        effect_layer_clip.x1 = effect_layer_clip.x1.max(overflow.x1);
+                    }
+                    if !clips_y {
+                        effect_layer_clip.y0 = effect_layer_clip.y0.min(overflow.y0);
+                        effect_layer_clip.y1 = effect_layer_clip.y1.max(overflow.y1);
+                    }
+                }
+
                 // Opacity/Filter layer if box has opacity or a filter.
-                // Clipped to border-box as it needs to include the background and borders.
+                // Covers at least the border box as it needs to include the background and borders.
                 self.layer_manager.maybe_with_layer(
                     scene,
                     has_opacity || filter.is_some() || backdrop_filter.is_some(),
@@ -395,7 +422,6 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
                         cx.draw_border(scene);
                         cx.stroke_devtools(scene);
 
-                        // TODO: allow layers with opacity to be unclipped (overflow: visible)
                         let clip = if is_text_input {
                             &cx.frame.content_box_path()
                         } else {
