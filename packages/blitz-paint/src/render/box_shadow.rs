@@ -70,7 +70,7 @@ impl ElementCx<'_, '_> {
                             rect,
                             shadow_color,
                             radius,
-                            shadow.base.blur.px() as f64,
+                            std_dev(shadow.base.blur.px(), self.scale),
                         );
                     }
                 }
@@ -101,8 +101,8 @@ impl ElementCx<'_, '_> {
             // TODO draw shadows with matching individual radii instead of averaging
             let radius = self.frame.border_radii.average();
             let transform = self.transform.then_translate(Vec2 {
-                x: shadow.base.horizontal.px() as f64,
-                y: shadow.base.vertical.px() as f64,
+                x: shadow.base.horizontal.px() as f64 * self.scale,
+                y: shadow.base.vertical.px() as f64 * self.scale,
             });
 
             scene.push_layer(Mix::Normal, 1.0, self.transform, &padding_box, None, None);
@@ -127,11 +127,24 @@ impl ElementCx<'_, '_> {
                 self.frame.border_box,
                 Color::WHITE,
                 radius,
-                shadow.base.blur.px() as f64 * self.scale,
+                std_dev(shadow.base.blur.px(), self.scale),
             );
 
             scene.pop_layer();
             scene.pop_layer();
         }
     }
+}
+
+/// The standard deviation of the gaussian a `box-shadow` blur radius asks for, in the
+/// device pixels the rest of the painted geometry is written in.
+///
+/// CSS defines the blur as a gaussian whose standard deviation is *half* the blur radius
+/// (CSS Backgrounds 3 § 5.4), and `PaintScene::draw_box_shadow` takes a standard
+/// deviation in the coordinate space of the `rect` it is handed — a backend applies the
+/// one `transform` to the rect, the corner radius and the deviation alike. Every other
+/// length that reaches `draw_box_shadow` from here has already been multiplied by
+/// `self.scale`, so this one has to be too.
+fn std_dev(blur: f32, scale: f64) -> f64 {
+    blur as f64 * 0.5 * scale
 }
