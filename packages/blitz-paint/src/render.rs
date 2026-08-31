@@ -268,8 +268,6 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
             ..
         } = node.final_layout;
         let box_position = Vec2::new(location.x as f64, location.y as f64) * self.scale;
-        let box_size = Size::new(size.width as f64, size.height as f64);
-        let border_box = Rect::from_origin_size(box_position.to_point(), box_size);
         let scaled_pb = (padding + border).map(f64::from);
         let content_position = kurbo::Point {
             x: scaled_pb.left,
@@ -290,6 +288,19 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
             x: -self.initial_x,
             y: -self.initial_y,
         }) * transform;
+        // The rect to cull against is this element's own box unioned with everything its
+        // subtree hangs outside it, mapped to the screen. Both halves are in the element's
+        // own coordinate space — `screen_transform` already carries `box_position`, so the
+        // border box starts at the origin — and both are in device pixels, which is what
+        // `resolve_transforms` stores `scrollable_overflow` in. (The union is belt and
+        // braces: `scrollable_overflow` is seeded with exactly this rect.)
+        let border_box = Rect::from_origin_size(
+            Point::ZERO,
+            Size::new(
+                size.width as f64 * self.scale,
+                size.height as f64 * self.scale,
+            ),
+        );
         let screen_bbox = screen_transform.transform_rect_bbox(overflow.union(border_box));
 
         // Cull elements that fall entirely outside the current clip rectangle. In addition to
