@@ -146,12 +146,12 @@ impl ElementCx<'_, '_> {
 /// one `transform` to the rect, the corner radius and the deviation alike. Every other
 /// length that reaches `draw_box_shadow` from here has already been multiplied by
 /// `self.scale`, so this one has to be too.
-fn std_dev(blur: f32, scale: f64) -> f64 {
+pub(super) fn std_dev(blur: f32, scale: f64) -> f64 {
     blur as f64 * 0.5 * scale
 }
 
 /// A shadow's `<offset-x> <offset-y>`, in those same device pixels.
-fn shadow_offset(shadow: &BoxShadow, scale: f64) -> Vec2 {
+pub(super) fn shadow_offset(shadow: &BoxShadow, scale: f64) -> Vec2 {
     Vec2::new(
         shadow.base.horizontal.px() as f64 * scale,
         shadow.base.vertical.px() as f64 * scale,
