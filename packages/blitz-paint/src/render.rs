@@ -134,6 +134,9 @@ pub struct BlitzDomPainter<'dom, 'a> {
     pub(crate) draw_text_context: RefCell<DrawTextContext>,
     /// Cached selection ranges for O(1) lookup: node_id -> (start_offset, end_offset)
     pub(crate) selection_ranges: HashMap<NodeId, (usize, usize)>,
+    /// How far past its layout box the ink of the most effect-laden element in this document
+    /// can reach, in device pixels. See `ink_margin`.
+    pub(crate) ink_margin: f64,
 
     // Pre-computed `Scene`s for each CustomWidget
     pub(crate) custom_widget_scenes: &'a CustomWidgetSceneMap,
@@ -174,6 +177,7 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
             layer_manager,
             draw_text_context: RefCell::new(DrawTextContext::default()),
             selection_ranges,
+            ink_margin: ink_margin(dom, scale),
             custom_widget_scenes,
         }
     }
@@ -482,6 +486,17 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
         // Cull elements that fall entirely outside the current clip rectangle. In addition to
         // the viewport, `clip_rect` is narrowed by any ancestor scrollport (see below), so this
         // also culls elements scrolled out of view inside a clipping/scrolling container.
+        //
+        // The rect above is layout: `scrollable_overflow` is the border box unioned with the
+        // children's layout rects and nothing else, so it says where boxes are, not where ink
+        // lands. A `box-shadow` or a `filter` puts ink outside its own layout box, and an
+        // element culled here is not drawn at all — shadow included — so culling on layout
+        // alone drops a shadow whose box has scrolled off the edge while its blur has not.
+        // Grow the rect by the furthest any one element in this document inks past its own
+        // box before comparing. It is a document-wide maximum rather than this subtree's,
+        // because the rect being tested is a parent's and the ink that matters may belong to
+        // a descendant that this early return means we never visit.
+        let screen_bbox = screen_bbox.inflate(self.ink_margin, self.ink_margin);
         if screen_bbox.x1 < clip_rect.x0
             || screen_bbox.x0 > clip_rect.x1
             || screen_bbox.y1 < clip_rect.y0
@@ -608,8 +623,10 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
                 // Save it so that the mask can be drawn untransformed by scroll offsets.
                 let unscrolled_transform = cx.transform;
 
-                let filter = convert_filters(&effects.filter.0).map(Arc::new);
-                let backdrop_filter = convert_filters(&effects.backdrop_filter.0).map(Arc::new);
+                let filter_scale = self.scale as f32;
+                let filter = convert_filters(&effects.filter.0, filter_scale).map(Arc::new);
+                let backdrop_filter =
+                    convert_filters(&effects.backdrop_filter.0, filter_scale).map(Arc::new);
 
                 // Adjust effect layer clip by filter expansion area
                 //
@@ -1478,4 +1495,55 @@ fn create_css_rect(style: &ComputedValues, layout: &Layout, scale: f64) -> CssBo
     };
 
     CssBox::new(border_box, border, padding, outline_width, border_radii)
+}
+
+/// How far past its own layout box the ink of the most effect-laden element in `dom` can
+/// reach, in device pixels.
+///
+/// `scrollable_overflow` — the rect elements are culled against — is layout: a border box
+/// unioned with the children's layout rects. `box-shadow` and `filter` are the two things
+/// that put ink outside that box, so this is the margin that makes culling on it safe. Both
+/// reaches are taken from the code that draws them (`box_shadow::std_dev` and the same
+/// `expansion_rect` the filter's own layer is grown by), so the cull cannot disagree with
+/// the painter about how far a blur carries.
+///
+/// It is deliberately one number for the whole document rather than a per-subtree one: the
+/// cull that matters is an ancestor's, and an ancestor that returns early never visits the
+/// descendant whose shadow reaches in, so the margin has to be known before the walk. Over-
+/// including costs a little fill rate; under-including drops ink.
+fn ink_margin(dom: &BaseDocument, scale: f64) -> f64 {
+    dom.tree()
+        .iter()
+        .map(|(_, node)| node_ink_reach(node, scale))
+        .fold(0.0f64, f64::max)
+}
+
+fn node_ink_reach(node: &Node, scale: f64) -> f64 {
+    let Some(style) = node.primary_styles() else {
+        return 0.0;
+    };
+    let effects = style.get_effects();
+    let mut reach = 0.0f64;
+
+    // An inset shadow is punched out of the border box and never inks outside it.
+    for shadow in effects.box_shadow.0.iter().filter(|shadow| !shadow.inset) {
+        let offset = box_shadow::shadow_offset(shadow, scale);
+        let spread = shadow.spread.px() as f64 * scale;
+        let blur = box_shadow::std_dev(shadow.base.blur.px(), scale) * 5.0;
+        reach = reach.max(offset.x.abs().max(offset.y.abs()) + spread + blur);
+    }
+
+    if let Some(filter) = convert_filters(&effects.filter.0, scale as f32) {
+        let grown = filter.expansion_rect();
+        reach = reach.max(
+            grown
+                .x0
+                .abs()
+                .max(grown.y0.abs())
+                .max(grown.x1.abs())
+                .max(grown.y1.abs()),
+        );
+    }
+
+    reach.max(0.0)
 }
