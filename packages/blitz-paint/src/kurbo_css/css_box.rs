@@ -627,10 +627,6 @@ impl BuildBezpath for BezPath {
 
 /// Get the start angle of the arc based on the border width and the radii
 fn start_angle(bt_width: f64, br_width: f64, radii: Vec2) -> f64 {
-    // slope of the border intersection split
-    let w = bt_width / br_width;
-    let x = radii.y / (w * radii.x);
-
     /*
     Any point on an ellipse is given by:
     x = a cos(t)
@@ -665,8 +661,24 @@ fn start_angle(bt_width: f64, br_width: f64, radii: Vec2) -> f64 {
     radius with 40px/10px border widths), always yielding t in [0, π/2).
     */
 
-    use std::f64::consts::SQRT_2;
-    let sqrt_x = x.sqrt();
+    use std::f64::consts::{FRAC_PI_2, FRAC_PI_4, SQRT_2};
+    // A degenerate corner has no finite k: with a zero top border width or
+    // horizontal radius it is infinite and the split sits at the end of the
+    // arc (s -> 1, t -> π/2); with a zero right border width or vertical
+    // radius it is zero (t = 0). Computed through `w` instead, either case
+    // reaches `0 / 0` or `∞ / ∞` and the NaN ends up in the corner's path.
+    // With both zero the corner has no area on either side of the split, so
+    // any angle draws the same thing.
+    let numerator = radii.y.max(0.0) * br_width.max(0.0);
+    let denominator = bt_width.max(0.0) * radii.x.max(0.0);
+    if !(denominator > 0.0) {
+        return if numerator > 0.0 {
+            FRAC_PI_2
+        } else {
+            FRAC_PI_4
+        };
+    }
+    let sqrt_x = (numerator / denominator).sqrt();
     let s = sqrt_x / (sqrt_x + SQRT_2);
     s.atan() * 2.0
 }
@@ -775,6 +787,58 @@ mod tests {
     fn handles_k_equal_two() {
         // k = radii.y / (w * radii.x) = 40 / ((10/40) * 80) = 2.0
         assert_solves(10.0, 40.0, Vec2 { x: 80.0, y: 40.0 });
+    }
+
+    /// A rounded corner next to a zero-width side (`border-top: 1px` alone, or
+    /// an inner padding-box radius the border has eaten to zero) has no finite
+    /// `k`. Dividing through `w` produced `NaN`, which reached the border path
+    /// and panicked path builders that reject non-finite points.
+    #[test]
+    fn degenerate_corners_split_at_a_finite_angle() {
+        use std::f64::consts::{FRAC_PI_2, FRAC_PI_4};
+        let round = Vec2 { x: 22.0, y: 22.0 };
+        assert_eq!(start_angle(0.0, 1.0, round), FRAC_PI_2);
+        assert_eq!(start_angle(1.0, 0.0, round), 0.0);
+        assert_eq!(start_angle(0.0, 0.0, round), FRAC_PI_4);
+        assert_eq!(start_angle(1.0, 1.0, Vec2 { x: 0.0, y: 22.0 }), FRAC_PI_2);
+        assert_eq!(start_angle(1.0, 1.0, Vec2 { x: 22.0, y: 0.0 }), 0.0);
+        assert_eq!(start_angle(1.0, 1.0, Vec2::ZERO), FRAC_PI_4);
+        assert_eq!(start_angle(1.0, 1.0, Vec2 { x: -3.0, y: 22.0 }), FRAC_PI_2);
+    }
+
+    #[test]
+    fn border_paths_stay_finite_beside_zero_width_sides() {
+        for border in [
+            Insets::new(0.0, 1.0, 0.0, 0.0),
+            Insets::new(1.0, 0.0, 0.0, 0.0),
+            Insets::new(0.0, 0.0, 1.0, 1.0),
+            Insets::new(22.0, 22.0, 22.0, 22.0),
+        ] {
+            let b = CssBox::new(
+                Rect::new(0.0, 0.0, 250.0, 250.0),
+                border,
+                Insets::ZERO,
+                0.0,
+                NonUniformRoundedRectRadii {
+                    top_left: Vec2::new(22.0, 22.0),
+                    top_right: Vec2::new(22.0, 22.0),
+                    bottom_right: Vec2::new(22.0, 22.0),
+                    bottom_left: Vec2::new(22.0, 22.0),
+                },
+            );
+            for edge in [Edge::Top, Edge::Right, Edge::Bottom, Edge::Left] {
+                let path = b.border_edge_shape(edge);
+                for el in path.elements() {
+                    let finite = match *el {
+                        PathEl::MoveTo(p) | PathEl::LineTo(p) => p.is_finite(),
+                        PathEl::QuadTo(a, p) => a.is_finite() && p.is_finite(),
+                        PathEl::CurveTo(a, c, p) => a.is_finite() && c.is_finite() && p.is_finite(),
+                        PathEl::ClosePath => true,
+                    };
+                    assert!(finite, "{border:?} {edge:?}: non-finite {el:?}");
+                }
+            }
+        }
     }
 
     #[test]
