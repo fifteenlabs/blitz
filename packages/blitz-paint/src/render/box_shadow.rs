@@ -4,6 +4,7 @@ use anyrender::PaintScene;
 use blitz_dom::CopyStyleGetters;
 use kurbo::{Rect, Vec2};
 use peniko::{Compose, Fill, Mix};
+use style::values::computed::effects::BoxShadow;
 
 impl ElementCx<'_, '_> {
     pub(super) fn draw_outset_box_shadow(&self, scene: &mut impl PaintScene) {
@@ -25,13 +26,15 @@ impl ElementCx<'_, '_> {
         let needs_clip = opacity < 1.0 || !bg_is_opaque;
 
         let max_shadow_rect = box_shadow.iter().fold(Rect::ZERO, |prev, shadow| {
-            let x = shadow.base.horizontal.px() as f64 * self.scale;
-            let y = shadow.base.vertical.px() as f64 * self.scale;
-            let blur = shadow.base.blur.px() as f64 * self.scale;
             let spread = shadow.spread.px() as f64 * self.scale;
-            let offset = spread + blur * 2.5;
+            // A gaussian is indistinguishable from zero beyond five standard deviations, so
+            // that is how far past the spread rect the blurred edge can still ink. The
+            // deviation has to come from the same helper the drawing below uses, or the clip
+            // and the shadow it clips are sized by two different definitions of "blur".
+            let reach = spread + std_dev(shadow.base.blur.px(), self.scale) * 5.0;
 
-            let rect = self.frame.border_box.inflate(offset, offset) + Vec2::new(x, y);
+            let rect =
+                self.frame.border_box.inflate(reach, reach) + shadow_offset(shadow, self.scale);
 
             prev.union(rect)
         });
@@ -55,13 +58,12 @@ impl ElementCx<'_, '_> {
 
                     let alpha = shadow_color.components[3];
                     if alpha != 0.0 {
-                        let transform = self.transform.then_translate(Vec2 {
-                            x: shadow.base.horizontal.px() as f64 * self.scale,
-                            y: shadow.base.vertical.px() as f64 * self.scale,
-                        });
+                        let transform = self
+                            .transform
+                            .then_translate(shadow_offset(shadow, self.scale));
 
                         let spread = shadow.spread.px() as f64 * self.scale;
-                        let blur = shadow.base.blur.px() as f64;
+                        let blur = std_dev(shadow.base.blur.px(), self.scale);
 
                         // Without blur or spread the shadow is exactly the element's shape,
                         // so fill the border box path directly (preserving individual radii)
@@ -110,10 +112,9 @@ impl ElementCx<'_, '_> {
 
             // TODO draw shadows with matching individual radii instead of averaging
             let radius = self.frame.border_radii.average();
-            let transform = self.transform.then_translate(Vec2 {
-                x: shadow.base.horizontal.px() as f64,
-                y: shadow.base.vertical.px() as f64,
-            });
+            let transform = self
+                .transform
+                .then_translate(shadow_offset(shadow, self.scale));
 
             scene.push_layer(
                 Fill::NonZero,
@@ -149,11 +150,32 @@ impl ElementCx<'_, '_> {
                 hole,
                 Color::WHITE,
                 radius,
-                shadow.base.blur.px() as f64 * self.scale,
+                std_dev(shadow.base.blur.px(), self.scale),
             );
 
             scene.pop_layer();
             scene.pop_layer();
         }
     }
+}
+
+/// The standard deviation of the gaussian a `box-shadow` blur radius asks for, in the
+/// device pixels the rest of the painted geometry is written in.
+///
+/// CSS defines the blur as a gaussian whose standard deviation is *half* the blur radius
+/// (CSS Backgrounds 3 § 5.4), and `PaintScene::draw_box_shadow` takes a standard
+/// deviation in the coordinate space of the `rect` it is handed — a backend applies the
+/// one `transform` to the rect, the corner radius and the deviation alike. Every other
+/// length that reaches `draw_box_shadow` from here has already been multiplied by
+/// `self.scale`, so this one has to be too.
+pub(super) fn std_dev(blur: f32, scale: f64) -> f64 {
+    blur as f64 * 0.5 * scale
+}
+
+/// A shadow's `<offset-x> <offset-y>`, in those same device pixels.
+pub(super) fn shadow_offset(shadow: &BoxShadow, scale: f64) -> Vec2 {
+    Vec2::new(
+        shadow.base.horizontal.px() as f64 * scale,
+        shadow.base.vertical.px() as f64 * scale,
+    )
 }
