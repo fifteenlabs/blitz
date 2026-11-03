@@ -1066,6 +1066,45 @@ impl<'a> TElement for BlitzNode<'a> {
                 }
             }
 
+            // https://html.spec.whatwg.org/multipage/rendering.html#tables-2:
+            // `valign` on table sections, rows and cells maps to
+            // `vertical-align`, which is shorthand for these two longhands.
+            // HTML-email bar charts depend on it: a
+            // `<td valign="bottom" style="height:110px">` column anchors its
+            // bar to the cell bottom.
+            if *name == local_name!("valign")
+                && (*tag == local_name!("td")
+                    || *tag == local_name!("th")
+                    || *tag == local_name!("tr")
+                    || *tag == local_name!("thead")
+                    || *tag == local_name!("tbody")
+                    || *tag == local_name!("tfoot"))
+            {
+                use style::values::generics::box_::BaselineShiftKeyword;
+                use style::values::specified::box_::{AlignmentBaseline, BaselineShift};
+                let mapped = if value.eq_ignore_ascii_case("top") {
+                    Some((
+                        AlignmentBaseline::Baseline,
+                        BaselineShift::Keyword(BaselineShiftKeyword::Top),
+                    ))
+                } else if value.eq_ignore_ascii_case("bottom") {
+                    Some((
+                        AlignmentBaseline::Baseline,
+                        BaselineShift::Keyword(BaselineShiftKeyword::Bottom),
+                    ))
+                } else if value.eq_ignore_ascii_case("middle") {
+                    Some((AlignmentBaseline::Middle, BaselineShift::zero()))
+                } else if value.eq_ignore_ascii_case("baseline") {
+                    Some((AlignmentBaseline::Baseline, BaselineShift::zero()))
+                } else {
+                    None
+                };
+                if let Some((baseline, shift)) = mapped {
+                    push_style(PropertyDeclaration::AlignmentBaseline(baseline));
+                    push_style(PropertyDeclaration::BaselineShift(shift));
+                }
+            }
+
             // The width/height attributes on these elements map to the
             // corresponding dimension properties (percentages allowed):
             // https://html.spec.whatwg.org/multipage/rendering.html#dimRendering
