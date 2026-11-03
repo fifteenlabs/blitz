@@ -1082,22 +1082,18 @@ impl<'a> TElement for BlitzNode<'a> {
             {
                 use style::values::generics::box_::BaselineShiftKeyword;
                 use style::values::specified::box_::{AlignmentBaseline, BaselineShift};
-                let mapped = if value.eq_ignore_ascii_case("top") {
-                    Some((
+                let mapped = match value.to_ascii_lowercase().as_str() {
+                    "top" => Some((
                         AlignmentBaseline::Baseline,
                         BaselineShift::Keyword(BaselineShiftKeyword::Top),
-                    ))
-                } else if value.eq_ignore_ascii_case("bottom") {
-                    Some((
+                    )),
+                    "bottom" => Some((
                         AlignmentBaseline::Baseline,
                         BaselineShift::Keyword(BaselineShiftKeyword::Bottom),
-                    ))
-                } else if value.eq_ignore_ascii_case("middle") {
-                    Some((AlignmentBaseline::Middle, BaselineShift::zero()))
-                } else if value.eq_ignore_ascii_case("baseline") {
-                    Some((AlignmentBaseline::Baseline, BaselineShift::zero()))
-                } else {
-                    None
+                    )),
+                    "middle" => Some((AlignmentBaseline::Middle, BaselineShift::zero())),
+                    "baseline" => Some((AlignmentBaseline::Baseline, BaselineShift::zero())),
+                    _ => None,
                 };
                 if let Some((baseline, shift)) = mapped {
                     push_style(PropertyDeclaration::AlignmentBaseline(baseline));

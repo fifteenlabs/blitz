@@ -302,10 +302,12 @@ impl ElementCx<'_, '_> {
             .rows
             .iter()
             .map(|row| {
-                [
-                    row.group.and_then(background_color),
-                    background_color(row.node_id),
-                ]
+                // An anonymous row's node is the block it wraps, which paints
+                // its own background.
+                let own = (!row.is_anonymous)
+                    .then(|| background_color(row.node_id))
+                    .flatten();
+                [row.group.and_then(background_color), own]
             })
             .collect();
         let has_color =

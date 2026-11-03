@@ -1494,7 +1494,7 @@ fn create_css_rect(style: &ComputedValues, layout: &Layout, scale: f64) -> CssBo
 /// `scrollable_overflow` — the rect elements are culled against — is layout: a border box
 /// unioned with the children's layout rects. `box-shadow` and `filter` are the two things
 /// that put ink outside that box, so this is the margin that makes culling on it safe. Both
-/// reaches are taken from the code that draws them (`box_shadow::std_dev` and the same
+/// reaches are taken from the code that draws them (`box_shadow::shadow_reach` and the same
 /// `expansion_rect` the filter's own layer is grown by), so the cull cannot disagree with
 /// the painter about how far a blur carries.
 ///
@@ -1519,9 +1519,8 @@ fn node_ink_reach(node: &Node, scale: f64) -> f64 {
     // An inset shadow is punched out of the border box and never inks outside it.
     for shadow in effects.box_shadow.0.iter().filter(|shadow| !shadow.inset) {
         let offset = box_shadow::shadow_offset(shadow, scale);
-        let spread = shadow.spread.px() as f64 * scale;
-        let blur = box_shadow::std_dev(shadow.base.blur.px(), scale) * 5.0;
-        reach = reach.max(offset.x.abs().max(offset.y.abs()) + spread + blur);
+        reach =
+            reach.max(offset.x.abs().max(offset.y.abs()) + box_shadow::shadow_reach(shadow, scale));
     }
 
     if let Some(filter) = convert_filters(&effects.filter.0, scale as f32) {
@@ -1536,5 +1535,5 @@ fn node_ink_reach(node: &Node, scale: f64) -> f64 {
         );
     }
 
-    reach.max(0.0)
+    reach
 }
