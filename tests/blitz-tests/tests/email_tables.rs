@@ -1,0 +1,162 @@
+//! Table layouts HTML email depends on, checked by the pixels they paint: block-level
+//! children of a table stacking as anonymous cells, collapsed borders taking each edge's
+//! own colour and the rows' separators, `valign`, and a fixed-width cell beside an auto
+//! one sizing its row.
+
+use anyrender::render_to_buffer;
+use anyrender_vello_cpu::VelloCpuImageRenderer;
+use blitz_dom::DocumentConfig;
+use blitz_html::{HtmlDocument, HtmlProvider};
+use blitz_paint::paint_scene;
+use blitz_traits::shell::{ColorScheme, Viewport};
+use std::sync::Arc;
+
+const SIZE: usize = 240;
+
+const RED: [u8; 3] = [255, 0, 0];
+const GREEN: [u8; 3] = [0, 255, 0];
+const BLUE: [u8; 3] = [0, 0, 255];
+const WHITE: [u8; 3] = [255, 255, 255];
+
+fn render(html: &str) -> Vec<u8> {
+    let mut doc = HtmlDocument::from_html(
+        html,
+        DocumentConfig {
+            viewport: Some(Viewport::new(
+                SIZE as u32,
+                SIZE as u32,
+                1.0,
+                ColorScheme::Light,
+            )),
+            html_parser_provider: Some(Arc::new(HtmlProvider) as _),
+            ..Default::default()
+        },
+    );
+    doc.resolve(0.0);
+    render_to_buffer::<VelloCpuImageRenderer, _>(
+        |scene| paint_scene(scene, &mut doc, 1.0, SIZE as u32, SIZE as u32, 0, 0),
+        SIZE as u32,
+        SIZE as u32,
+    )
+}
+
+fn pixel(buffer: &[u8], x: usize, y: usize) -> [u8; 3] {
+    let idx = (y * SIZE + x) * 4;
+    [buffer[idx], buffer[idx + 1], buffer[idx + 2]]
+}
+
+fn page(body: &str) -> String {
+    format!(r#"<html><body style="margin:0; background:#ffffff;">{body}</body></html>"#)
+}
+
+#[test]
+fn block_children_of_a_table_stack_as_anonymous_cells() {
+    let buffer = render(&page(
+        r#"<table cellpadding="0" cellspacing="0" style="width:200px"><tr>
+            <td style="display:block"><div style="height:40px; background:#ff0000"></div></td>
+            <td style="display:block"><div style="height:40px; background:#0000ff"></div></td>
+        </tr></table>"#,
+    ));
+    assert_eq!(
+        pixel(&buffer, 100, 20),
+        RED,
+        "the first block is the first row"
+    );
+    assert_eq!(
+        pixel(&buffer, 100, 60),
+        BLUE,
+        "the second block stacks under the first, full width, rather than being dropped"
+    );
+}
+
+#[test]
+fn a_fixed_width_cell_beside_an_auto_cell_sizes_its_row() {
+    let buffer = render(&page(
+        r#"<table cellpadding="0" cellspacing="0"><tr>
+            <td></td>
+            <td width="150"><div style="height:100px; background:#ff0000"></div></td>
+        </tr></table>
+        <div style="height:40px; background:#0000ff"></div>"#,
+    ));
+    assert_eq!(
+        pixel(&buffer, 50, 50),
+        RED,
+        "the fixed-width cell keeps its height"
+    );
+    assert_eq!(
+        pixel(&buffer, 50, 120),
+        BLUE,
+        "the block after the table starts below the 100px cell"
+    );
+}
+
+#[test]
+fn a_borderless_collapsed_table_draws_no_grid() {
+    let buffer = render(&page(
+        r#"<table style="border-collapse:collapse" cellpadding="0"><tr>
+            <td style="background:#0000ff; width:100px; height:40px"></td>
+            <td style="background:#0000ff; width:100px; height:40px"></td>
+        </tr></table>"#,
+    ));
+    for x in 95..106 {
+        assert_eq!(
+            pixel(&buffer, x, 20),
+            BLUE,
+            "no grid line at x={x}: borderless sides draw nothing"
+        );
+    }
+}
+
+#[test]
+fn a_collapsed_cell_border_keeps_its_own_colour() {
+    let buffer = render(&page(
+        r#"<table style="border-collapse:collapse" cellpadding="0"><tr>
+            <td style="background:#0000ff; width:100px; height:40px; border-right:10px solid #00ff00"></td>
+            <td style="background:#0000ff; width:100px; height:40px"></td>
+        </tr></table>"#,
+    ));
+    let seam = (0..SIZE)
+        .map(|x| pixel(&buffer, x, 20))
+        .find(|colour| *colour != BLUE);
+    assert_eq!(
+        seam,
+        Some(GREEN),
+        "the gutter is the cell's own green border, not its border-top colour or nothing"
+    );
+}
+
+#[test]
+fn a_collapsed_row_border_separates_rows() {
+    let buffer = render(&page(
+        r#"<table style="border-collapse:collapse; width:200px" cellpadding="0">
+            <tr style="border-bottom:4px solid #ff0000"><td style="height:40px"></td></tr>
+            <tr><td style="height:40px"></td></tr>
+        </table>"#,
+    ));
+    let line = (0..100).find(|y| pixel(&buffer, 100, *y) == RED);
+    assert!(
+        line.is_some_and(|y| (36..48).contains(&y)),
+        "a red separator between the rows, found at {line:?}"
+    );
+}
+
+#[test]
+fn valign_bottom_anchors_a_cell_to_its_bottom() {
+    let buffer = render(&page(
+        r#"<table style="width:100px; border-collapse:collapse">
+            <tr><td valign="bottom" style="height:110px; font-size:0; line-height:0">
+                <div style="height:55px; background:#ff0000"></div>
+            </td></tr>
+        </table>"#,
+    ));
+    assert_eq!(
+        pixel(&buffer, 30, 30),
+        WHITE,
+        "the top of the cell is empty"
+    );
+    assert_eq!(
+        pixel(&buffer, 30, 100),
+        RED,
+        "the content sits at the bottom"
+    );
+}

@@ -26,13 +26,7 @@ impl ElementCx<'_, '_> {
         let needs_clip = opacity < 1.0 || !bg_is_opaque;
 
         let max_shadow_rect = box_shadow.iter().fold(Rect::ZERO, |prev, shadow| {
-            let spread = shadow.spread.px() as f64 * self.scale;
-            // A gaussian is indistinguishable from zero beyond five standard deviations, so
-            // that is how far past the spread rect the blurred edge can still ink. The
-            // deviation has to come from the same helper the drawing below uses, or the clip
-            // and the shadow it clips are sized by two different definitions of "blur".
-            let reach = spread + std_dev(shadow.base.blur.px(), self.scale) * 5.0;
-
+            let reach = shadow_reach(shadow, self.scale);
             let rect =
                 self.frame.border_box.inflate(reach, reach) + shadow_offset(shadow, self.scale);
 
@@ -170,6 +164,14 @@ impl ElementCx<'_, '_> {
 /// `self.scale`, so this one has to be too.
 pub(super) fn std_dev(blur: f32, scale: f64) -> f64 {
     blur as f64 * 0.5 * scale
+}
+
+/// How far past the border box an outset shadow's blurred edge can still ink, before its
+/// offset, in device pixels: its spread plus five standard deviations, beyond which a
+/// gaussian is indistinguishable from zero. The shadow's own clip and the painter's cull
+/// both size themselves by this, so they cannot disagree about how far a blur carries.
+pub(super) fn shadow_reach(shadow: &BoxShadow, scale: f64) -> f64 {
+    shadow.spread.px() as f64 * scale + std_dev(shadow.base.blur.px(), scale) * 5.0
 }
 
 /// A shadow's `<offset-x> <offset-y>`, in those same device pixels.

@@ -25,6 +25,7 @@ mod details_element;
 mod device_coalescing;
 mod dir_attribute;
 mod display_contents;
+mod email_tables;
 mod filter_scale;
 mod flex_grid_order;
 mod focus_redraw;

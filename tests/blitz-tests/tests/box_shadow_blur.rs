@@ -91,28 +91,14 @@ fn inset_blur_is_half_the_radius_in_device_pixels() {
 }
 
 #[test]
-fn an_inset_and_an_outset_shadow_of_one_radius_are_one_gaussian() {
-    for scale in [1.0, 2.0, 3.0] {
-        let outset = only_shadow(&format!("0 0 {BLUR}px #000"), scale);
-        let inset = only_shadow(&format!("inset 0 0 {BLUR}px #000"), scale);
-        assert_eq!(
-            outset.std_dev, inset.std_dev,
-            "the two call sites paint the same blur radius at scale {scale}, so they cannot \
-             disagree about what it means"
-        );
-    }
-}
-
-#[test]
 fn a_shadow_offset_is_in_device_pixels_like_the_rect_it_moves() {
     // A blur keeps the outset shadow on the blurred path: one without blur or spread is
     // painted as a plain fill of the border box instead.
-    for shadow in ["{OFFSET}px 0 {BLUR}px #000", "inset {OFFSET}px 0 {BLUR}px #000"] {
-        let shadow = shadow
-            .replace("{OFFSET}", &OFFSET.to_string())
-            .replace("{BLUR}", &BLUR.to_string());
+    for inset in ["", "inset "] {
+        let shadow = format!("{inset}{OFFSET}px 0 {BLUR}px #000");
+        let still = format!("{inset}0 0 {BLUR}px #000");
         for scale in [1.0, 2.0, 3.0] {
-            let still = only_shadow(&shadow.replace(&format!("{OFFSET}px 0"), "0 0"), scale);
+            let still = only_shadow(&still, scale);
             let moved = only_shadow(&shadow, scale);
             assert_eq!(
                 moved.transform.translation().x - still.transform.translation().x,

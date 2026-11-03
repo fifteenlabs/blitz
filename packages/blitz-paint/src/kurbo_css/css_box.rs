@@ -828,15 +828,7 @@ mod tests {
             );
             for edge in [Edge::Top, Edge::Right, Edge::Bottom, Edge::Left] {
                 let path = b.border_edge_shape(edge);
-                for el in path.elements() {
-                    let finite = match *el {
-                        PathEl::MoveTo(p) | PathEl::LineTo(p) => p.is_finite(),
-                        PathEl::QuadTo(a, p) => a.is_finite() && p.is_finite(),
-                        PathEl::CurveTo(a, c, p) => a.is_finite() && c.is_finite() && p.is_finite(),
-                        PathEl::ClosePath => true,
-                    };
-                    assert!(finite, "{border:?} {edge:?}: non-finite {el:?}");
-                }
+                assert!(path.is_finite(), "{border:?} {edge:?}: non-finite {path:?}");
             }
         }
     }
