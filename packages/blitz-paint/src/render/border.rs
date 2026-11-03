@@ -5,8 +5,11 @@ use kurbo::{BezPath, Cap, Circle, Insets, Join, PathEl, Point, Rect, Shape as _,
 use peniko::{Color, Fill};
 use smallvec::SmallVec;
 use style::{
+    color::AbsoluteColor,
     computed_values::border_collapse::T as BorderCollapse,
-    values::computed::{BorderStyle, OutlineStyle},
+    properties::style_structs::Border as StyloBorder,
+    values::computed::{BorderSideWidth, BorderStyle, Color as StyloColor, OutlineStyle},
+    values::specified::box_::DisplayInside,
 };
 
 use crate::{
@@ -14,6 +17,66 @@ use crate::{
     kurbo_css::Edge,
     render::{ElementCx, PhysicalTracks},
 };
+
+/// The (style, width, color) triple of one side of a stylo border.
+fn border_side(border: &StyloBorder, edge: Edge) -> (BorderStyle, &BorderSideWidth, &StyloColor) {
+    match edge {
+        Edge::Top => (
+            border.border_top_style,
+            &border.border_top_width,
+            &border.border_top_color,
+        ),
+        Edge::Right => (
+            border.border_right_style,
+            &border.border_right_width,
+            &border.border_right_color,
+        ),
+        Edge::Bottom => (
+            border.border_bottom_style,
+            &border.border_bottom_width,
+            &border.border_bottom_color,
+        ),
+        Edge::Left => (
+            border.border_left_style,
+            &border.border_left_width,
+            &border.border_left_color,
+        ),
+    }
+}
+
+/// One side of a stylo border as a collapsed-border-grid candidate: its used
+/// width and resolved color, or `None` when the side is `none`/`hidden` or
+/// zero-width.
+fn collapsed_edge(
+    border: &StyloBorder,
+    edge: Edge,
+    current_color: &AbsoluteColor,
+) -> Option<(f64, Color)> {
+    let (side_style, width, color) = border_side(border, edge);
+    if side_style.none_or_hidden() {
+        return None;
+    }
+    let width = width.0.to_f64_px();
+    if width <= 0.0 {
+        return None;
+    }
+    Some((
+        width,
+        color.resolve_to_absolute(current_color).as_srgb_color(),
+    ))
+}
+
+/// The winning collapsed-border candidate: the widest one. `max_by` returns
+/// the last of equally-wide candidates, so later candidates win ties — pass
+/// them lowest-precedence-first (table < row < cell, CSS 2.2 §17.6.2.1).
+fn collapsed_winner(
+    candidates: impl IntoIterator<Item = Option<(f64, Color)>>,
+) -> Option<(f64, Color)> {
+    candidates
+        .into_iter()
+        .flatten()
+        .max_by(|a, b| a.0.total_cmp(&b.0))
+}
 
 /// A darker version of a colour (mirrors WebKit/Blink's `Color::Dark`): the
 /// brightest channel is reduced by a fixed amount and the others scaled to match,
@@ -522,69 +585,107 @@ impl ElementCx<'_, '_> {
         let Some(grid_info) = &mut *table.computed_grid_info.borrow_mut() else {
             return;
         };
-        let Some(border_style) = table.border_style.as_deref() else {
-            return;
-        };
-
-        let outer_border_style = self.style.get_border();
 
         let cols = PhysicalTracks::from_tracks(&grid_info.columns);
         let rows = PhysicalTracks::from_tracks(&grid_info.rows);
 
-        // TODO: support different colors for different borders
+        // Approximate CSS collapsed-border conflict resolution (blitz does
+        // not track per-edge winners): the first cell's border stands in for
+        // every cell and each edge takes the widest visible candidate, so
+        // e.g. a 10px white cell border paints white instead of borrowing
+        // the top border's color, and borderless sides paint nothing at all.
         let current_color = self.style.clone_color();
-        let border_color = border_style
-            .border_top_color
-            .resolve_to_absolute(&current_color)
-            .as_srgb_color();
+        let cell_border = table.border_style.as_deref();
+        let cell_axis = |a: Edge, b: Edge| {
+            cell_border.and_then(|border| {
+                collapsed_winner([
+                    collapsed_edge(border, a, &current_color),
+                    collapsed_edge(border, b, &current_color),
+                ])
+            })
+        };
+        let cell_x = cell_axis(Edge::Left, Edge::Right);
+        let cell_y = cell_axis(Edge::Top, Edge::Bottom);
 
-        // No need to draw transparent borders (as they won't be visible anyway)
-        if border_color == Color::TRANSPARENT {
-            return;
-        }
-
-        // Border widths are not adjusted for border-style in computed styles,
-        // so a border with `none`/`hidden` style must be treated as zero-width.
-        if border_style.border_top_style.none_or_hidden() {
-            return;
-        }
+        // A row's candidates for the horizontal grid lines above (its top
+        // border) and below it (its bottom border). Rows standing in for an
+        // anonymous cell are the block box itself, whose border is its own.
+        let row_edges = |row_index: usize| -> (Option<(f64, Color)>, Option<(f64, Color)>) {
+            let styles = table
+                .rows
+                .get(row_index)
+                .and_then(|row| self.context.dom.get_node(row.node_id))
+                .and_then(|node| node.primary_styles())
+                .filter(|styles| styles.clone_display().inside() == DisplayInside::TableRow);
+            let Some(styles) = styles else {
+                return (None, None);
+            };
+            let border = styles.get_border();
+            let row_color = styles.clone_color();
+            (
+                collapsed_edge(border, Edge::Top, &row_color),
+                collapsed_edge(border, Edge::Bottom, &row_color),
+            )
+        };
+        let row_edges: Vec<_> = (0..rows.iter().len()).map(row_edges).collect();
 
         // The borders are laid out as the gutters between the tracks, and as the border
         // of the table around them. Track positions are relative to the table's border box.
-        let border_width = table.style.gap.map(|gap| gap.into_raw().value() as f64);
-        let left = cols.origin() as f64 - border_width.width;
-        let right = (cols.origin() + cols.span()) as f64 + border_width.width;
-        let top = rows.origin() as f64 - border_width.height;
-        let bottom = (rows.origin() + rows.span()) as f64 + border_width.height;
+        let edge_width = table.style.border.map(|w| w.into_raw().value() as f64);
+        let left = cols.origin() as f64 - edge_width.left;
+        let right = (cols.origin() + cols.span()) as f64 + edge_width.right;
+        let top = rows.origin() as f64 - edge_width.top;
+        let bottom = (rows.origin() + rows.span()) as f64 + edge_width.bottom;
 
-        let mut fill = |x0: f64, y0: f64, x1: f64, y1: f64| {
+        let mut fill = |color: Color, x0: f64, y0: f64, x1: f64, y1: f64| {
+            if x1 <= x0 || y1 <= y0 || color == Color::TRANSPARENT {
+                return;
+            }
             let shape = Rect::new(x0, y0, x1, y1).scale_from_origin(self.scale);
-            scene.fill(Fill::NonZero, self.transform, border_color, None, &shape);
+            scene.fill(Fill::NonZero, self.transform, color, None, &shape);
+        };
+
+        // Outer edges: the table's own border competes with the grid line for
+        // that axis (ties resolved cell over row over table). Layout already
+        // made each edge as wide as its winner, or zero when `hidden`.
+        let outer = self.style.get_border();
+        let outer_color = |edge: Edge, row: Option<(f64, Color)>, axis: Option<(f64, Color)>| {
+            collapsed_winner([collapsed_edge(outer, edge, &current_color), row, axis])
+                .map(|(_, color)| color)
         };
 
         // Horizontal borders: the outer edges, then the gutters between adjacent row tracks.
         // The vertical borders are drawn between them so that no corner is painted twice.
-        if outer_border_style.border_top_style != BorderStyle::Hidden {
-            fill(left, top, right, top + border_width.height);
+        let first_row_top = row_edges.first().and_then(|edges| edges.0);
+        let last_row_bottom = row_edges.last().and_then(|edges| edges.1);
+        if let Some(color) = outer_color(Edge::Top, first_row_top, cell_y) {
+            fill(color, left, top, right, top + edge_width.top);
         }
-        if outer_border_style.border_bottom_style != BorderStyle::Hidden {
-            fill(left, bottom - border_width.height, right, bottom);
+        if let Some(color) = outer_color(Edge::Bottom, last_row_bottom, cell_y) {
+            fill(color, left, bottom - edge_width.bottom, right, bottom);
         }
-        for (prev, next) in rows.iter().zip(rows.iter().skip(1)) {
-            fill(left, prev.end as f64, right, next.start as f64);
+        for (index, (prev, next)) in rows.iter().zip(rows.iter().skip(1)).enumerate() {
+            let candidates = [row_edges[index].1, row_edges[index + 1].0, cell_y];
+            if let Some((_, color)) = collapsed_winner(candidates) {
+                fill(color, left, prev.end as f64, right, next.start as f64);
+            }
         }
 
         // Vertical borders, one segment per row
+        let left_color = outer_color(Edge::Left, None, cell_x);
+        let right_color = outer_color(Edge::Right, None, cell_x);
         for row in rows.iter() {
             let (y0, y1) = (row.start as f64, row.end as f64);
-            if outer_border_style.border_left_style != BorderStyle::Hidden {
-                fill(left, y0, left + border_width.width, y1);
+            if let Some(color) = left_color {
+                fill(color, left, y0, left + edge_width.left, y1);
             }
-            if outer_border_style.border_right_style != BorderStyle::Hidden {
-                fill(right - border_width.width, y0, right, y1);
+            if let Some(color) = right_color {
+                fill(color, right - edge_width.right, y0, right, y1);
             }
-            for (prev, next) in cols.iter().zip(cols.iter().skip(1)) {
-                fill(prev.end as f64, y0, next.start as f64, y1);
+            if let Some((_, color)) = cell_x {
+                for (prev, next) in cols.iter().zip(cols.iter().skip(1)) {
+                    fill(color, prev.end as f64, y0, next.start as f64, y1);
+                }
             }
         }
     }
