@@ -168,6 +168,21 @@ fn side_width(width: app_units::Au, style: BorderStyle) -> f32 {
     }
 }
 
+/// The widths a border contributes to the collapsed border grid, per axis:
+/// x is its widest visible left/right side, y its widest visible top/bottom
+/// side.
+fn collapsed_axis_widths(border: &Border) -> (f32, f32) {
+    let x = side_width(border.border_left_width.0, border.border_left_style).max(side_width(
+        border.border_right_width.0,
+        border.border_right_style,
+    ));
+    let y = side_width(border.border_top_width.0, border.border_top_style).max(side_width(
+        border.border_bottom_width.0,
+        border.border_bottom_style,
+    ));
+    (x, y)
+}
+
 /// Build a `calc(<percent> + <length>)` track sizing function. The calc value is
 /// boxed and stored in `calc_values` so that the raw pointer Taffy holds stays valid.
 fn percent_plus_length(
@@ -238,6 +253,7 @@ pub(crate) fn build_table_context(
 
     let border_collapse = stylo_styles.clone_border_collapse();
     let border_spacing = stylo_styles.clone_border_spacing().0;
+    let table_border = stylo_styles.clone_border();
 
     drop(stylo_styles);
 
@@ -391,29 +407,63 @@ pub(crate) fn build_table_context(
                 height: style_helpers::length(spacing_y),
             }
         }
-        BorderCollapse::Collapse => first_cell_border
-            .as_ref()
-            .map(|border| {
-                let x = side_width(border.border_left_width.0, border.border_left_style).max(
-                    side_width(border.border_right_width.0, border.border_right_style),
-                );
-                let y = side_width(border.border_top_width.0, border.border_top_style).max(
-                    side_width(border.border_bottom_width.0, border.border_bottom_style),
-                );
-                taffy::Size {
-                    width: style_helpers::length(x),
-                    height: style_helpers::length(y),
-                }
-            })
-            .unwrap_or(taffy::Size::ZERO.map(style_helpers::length)),
+        BorderCollapse::Collapse => {
+            // Approximate the collapsed border grid: vertical lines take the
+            // first cell's widest visible left/right border, horizontal lines
+            // the wider of that cell's top/bottom border and the first
+            // visible row border (the `tr { border-bottom: … }` separator
+            // pattern is common in HTML emails).
+            let (cell_x, cell_y) = first_cell_border
+                .as_deref()
+                .map(collapsed_axis_widths)
+                .unwrap_or((0.0, 0.0));
+            let row_y = rows
+                .iter()
+                .filter_map(|row| doc.nodes[row.node_id].primary_styles())
+                .filter(|styles| styles.clone_display().inside() == DisplayInside::TableRow)
+                .map(|styles| collapsed_axis_widths(styles.get_border()).1)
+                .find(|y| *y > 0.0)
+                .unwrap_or(0.0);
+            taffy::Size {
+                width: style_helpers::length(cell_x),
+                height: style_helpers::length(cell_y.max(row_y)),
+            }
+        }
     };
 
     if border_collapse == BorderCollapse::Collapse {
+        // A collapsed table's outer edge is the wider of the table's own
+        // border and the grid line for that axis; `hidden` on the table's
+        // side suppresses the edge entirely (CSS 2.2 §17.6.2.1).
+        let grid = style.gap.map(|gap| gap.into_raw().value());
+        let edge = |side_style: BorderStyle, side_width_au: app_units::Au, grid: f32| {
+            if side_style == BorderStyle::Hidden {
+                style_helpers::length(0.0)
+            } else {
+                style_helpers::length(side_width(side_width_au, side_style).max(grid))
+            }
+        };
         style.border = taffy::Rect {
-            left: style.gap.width,
-            right: style.gap.width,
-            top: style.gap.height,
-            bottom: style.gap.height,
+            left: edge(
+                table_border.border_left_style,
+                table_border.border_left_width.0,
+                grid.width,
+            ),
+            right: edge(
+                table_border.border_right_style,
+                table_border.border_right_width.0,
+                grid.width,
+            ),
+            top: edge(
+                table_border.border_top_style,
+                table_border.border_top_width.0,
+                grid.height,
+            ),
+            bottom: edge(
+                table_border.border_bottom_style,
+                table_border.border_bottom_width.0,
+                grid.height,
+            ),
         };
     }
 
