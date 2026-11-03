@@ -133,6 +133,10 @@ pub struct TableRow {
     /// specified length `height`. Such rows do not receive excess table height when there
     /// are unconstrained rows to receive it instead.
     pub is_constrained: bool,
+    /// Whether this row stands in for the anonymous cell wrapping a block-level
+    /// child of the table (see `collect_table_cells`). Its `node_id` is that
+    /// block, so the row has no styles of its own.
+    pub is_anonymous: bool,
 }
 
 /// The used width of one border side: border widths are not adjusted for
@@ -419,8 +423,8 @@ pub(crate) fn build_table_context(
                 .unwrap_or((0.0, 0.0));
             let row_y = rows
                 .iter()
+                .filter(|row| !row.is_anonymous)
                 .filter_map(|row| doc.nodes[row.node_id].primary_styles())
-                .filter(|styles| styles.clone_display().inside() == DisplayInside::TableRow)
                 .map(|styles| collapsed_axis_widths(styles.get_border()).1)
                 .find(|y| *y > 0.0)
                 .unwrap_or(0.0);
@@ -655,6 +659,7 @@ fn collect_table_cells(
                 group: None,
                 height,
                 is_constrained: height.is_some(),
+                is_anonymous: false,
             });
 
             let children = std::mem::take(&mut doc.nodes[node_id].children);
@@ -813,6 +818,7 @@ fn collect_table_cells(
                 group: None,
                 height: None,
                 is_constrained: false,
+                is_anonymous: true,
             });
             let stylo_style = &node.primary_styles().unwrap();
             let mut style = table_taffy_style(stylo_style, wm);
@@ -826,7 +832,7 @@ fn collect_table_cells(
             };
             cells.push(TableCell {
                 node_id,
-                row: row.saturating_sub(1),
+                row: *row - 1,
                 column: 0,
                 style,
             });

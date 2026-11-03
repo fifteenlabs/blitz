@@ -9,7 +9,6 @@ use style::{
     computed_values::border_collapse::T as BorderCollapse,
     properties::style_structs::Border as StyloBorder,
     values::computed::{BorderSideWidth, BorderStyle, Color as StyloColor, OutlineStyle},
-    values::specified::box_::DisplayInside,
 };
 
 use crate::{
@@ -608,15 +607,15 @@ impl ElementCx<'_, '_> {
         let cell_y = cell_axis(Edge::Top, Edge::Bottom);
 
         // A row's candidates for the horizontal grid lines above (its top
-        // border) and below it (its bottom border). Rows standing in for an
-        // anonymous cell are the block box itself, whose border is its own.
-        let row_edges = |row_index: usize| -> (Option<(f64, Color)>, Option<(f64, Color)>) {
+        // border) and below it (its bottom border). A row standing in for an
+        // anonymous cell is the block box itself, whose border is its own.
+        let edges_of = |row_index: usize| -> (Option<(f64, Color)>, Option<(f64, Color)>) {
             let styles = table
                 .rows
                 .get(row_index)
+                .filter(|row| !row.is_anonymous)
                 .and_then(|row| self.context.dom.get_node(row.node_id))
-                .and_then(|node| node.primary_styles())
-                .filter(|styles| styles.clone_display().inside() == DisplayInside::TableRow);
+                .and_then(|node| node.primary_styles());
             let Some(styles) = styles else {
                 return (None, None);
             };
@@ -627,7 +626,7 @@ impl ElementCx<'_, '_> {
                 collapsed_edge(border, Edge::Bottom, &row_color),
             )
         };
-        let row_edges: Vec<_> = (0..rows.iter().len()).map(row_edges).collect();
+        let row_edges: Vec<_> = (0..rows.iter().len()).map(edges_of).collect();
 
         // The borders are laid out as the gutters between the tracks, and as the border
         // of the table around them. Track positions are relative to the table's border box.
