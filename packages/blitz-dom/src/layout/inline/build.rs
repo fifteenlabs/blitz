@@ -280,10 +280,13 @@ pub(crate) fn build_inline_layout_into(
                             width: 0.0,
                             height: 0.0,
                             baseline: None,
-                            vertical_align: node
-                                .primary_styles()
-                                .map(|s| stylo_to_parley::vertical_align(&s))
-                                .unwrap_or_default(),
+                            vertical_align: if super::stands_in_for_inline_table(display) {
+                                parley::VerticalAlign::default()
+                            } else {
+                                node.primary_styles()
+                                    .map(|s| stylo_to_parley::vertical_align(&s))
+                                    .unwrap_or_default()
+                            },
                         });
                     }
                 };

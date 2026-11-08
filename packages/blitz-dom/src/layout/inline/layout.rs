@@ -527,8 +527,9 @@ impl LayoutPassState<'_> {
             // A layout-contained box is treated as having no baseline (css-contain-1 §3.3).
             let overflow = style.overflow();
             let box_style = style.style.get_box();
+            let display = style.effective_display();
             let is_flow = matches!(
-                style.effective_display().inside(),
+                display.inside(),
                 DisplayInside::Flow | DisplayInside::FlowRoot
             );
             let baseline_source = box_style.slow_clone_baseline_source();
@@ -546,6 +547,20 @@ impl LayoutPassState<'_> {
             let contain_layout = box_style.slow_clone_contain().contains(Contain::LAYOUT);
             let exports_baseline = !(contain_layout
                 || (baseline_source == BaselineSource::Auto && is_block_axis_scroll_container));
+            // The anonymous inline-table's baseline is its first row's: the cell's first
+            // baseline if the cell is baseline-aligned and has one, and otherwise the bottom
+            // of the cell's content box (css-tables-3 §3.9.2, CSS 2.1 §17.5.3).
+            let inline_table_cell = super::stands_in_for_inline_table(display).then(|| {
+                let padding = style
+                    .padding()
+                    .resolve_or_zero(inputs.parent_size, resolve_calc_value);
+                let border = style
+                    .border()
+                    .resolve_or_zero(inputs.parent_size, resolve_calc_value);
+                let baseline_aligned = stylo_to_parley::vertical_align(&style.style)
+                    == parley::VerticalAlign::default();
+                (baseline_aligned, padding.bottom + border.bottom)
+            });
             let box_inputs = inline_box_inputs(style.size().width, margin, child_inputs);
             drop(style);
 
@@ -556,7 +571,14 @@ impl LayoutPassState<'_> {
             } else {
                 let output = self.compute_child_layout(taffy::NodeId::from(ibox.id), box_inputs);
                 ibox.width = (margin.left + margin.right + output.size.width) * scale;
-                ibox.baseline = if exports_baseline {
+                ibox.baseline = if let Some((baseline_aligned, bottom_insets)) = inline_table_cell {
+                    let baseline = output
+                        .baselines
+                        .first
+                        .filter(|_| baseline_aligned)
+                        .unwrap_or(output.size.height - bottom_insets);
+                    Some((margin.top + baseline) * scale)
+                } else if exports_baseline {
                     let baseline = if uses_last_baseline {
                         output.baselines.last.or(output.baselines.first)
                     } else {
