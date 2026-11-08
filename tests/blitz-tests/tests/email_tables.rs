@@ -18,7 +18,7 @@ const GREEN: [u8; 3] = [0, 255, 0];
 const BLUE: [u8; 3] = [0, 0, 255];
 const WHITE: [u8; 3] = [255, 255, 255];
 
-fn render(html: &str) -> Vec<u8> {
+fn document(html: &str) -> HtmlDocument {
     let mut doc = HtmlDocument::from_html(
         html,
         DocumentConfig {
@@ -33,6 +33,11 @@ fn render(html: &str) -> Vec<u8> {
         },
     );
     doc.resolve(0.0);
+    doc
+}
+
+fn render(html: &str) -> Vec<u8> {
+    let mut doc = document(html);
     render_to_buffer::<VelloCpuImageRenderer, _>(
         |scene| paint_scene(scene, &mut doc, 1.0, SIZE as u32, SIZE as u32, 0, 0),
         SIZE as u32,
@@ -194,4 +199,43 @@ fn a_cell_width_still_sizes_a_fixed_layout_column() {
         BLUE,
         "fixed layout ignores the content, so the second column starts at 10px"
     );
+}
+
+fn inline_rects(body: &str) -> impl Fn(&str) -> (f32, f32) {
+    let doc = document(&page(body));
+    move |selector| {
+        let id = doc.query_selector(selector).unwrap().unwrap();
+        let node = doc.get_node(id).unwrap();
+        let top = node.absolute_position(0.0, 0.0).y;
+        (top, top + node.final_layout().size.height)
+    }
+}
+
+#[test]
+fn a_middle_aligned_table_cell_inside_an_inline_sits_on_its_bottom_edge() {
+    let rect = inline_rects(
+        r#"<div style="font-size:20px; line-height:30px"><a>
+            <span id="box" style="display:inline-block; width:20px; height:40px"></span>
+            <span id="cell" style="display:table-cell; vertical-align:middle">3</span>
+        </a></div>"#,
+    );
+    assert_eq!(
+        rect("#cell").1,
+        rect("#box").1,
+        "a row without baseline-aligned cells takes its baseline from the cell's bottom \
+         edge, so the anonymous inline-table sits on the line by it, like an empty \
+         inline-block"
+    );
+}
+
+#[test]
+fn a_baseline_aligned_table_cell_inside_an_inline_sits_on_its_text() {
+    let rect = inline_rects(
+        r#"<div style="font-size:20px; line-height:30px"><a>
+            <span style="display:inline-block; width:20px; height:40px"></span>
+            <span id="block" style="display:inline-block">3</span>
+            <span id="cell" style="display:table-cell">3</span>
+        </a></div>"#,
+    );
+    assert_eq!(rect("#cell").0, rect("#block").0);
 }
