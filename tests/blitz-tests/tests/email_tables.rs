@@ -1,7 +1,7 @@
 //! Table layouts HTML email depends on, checked by the pixels they paint: block-level
 //! children of a table stacking as anonymous cells, collapsed borders taking each edge's
-//! own colour and the rows' separators, `valign`, and a fixed-width cell beside an auto
-//! one sizing its row.
+//! own colour and the rows' separators, `valign`, a fixed-width cell beside an auto
+//! one sizing its row, and a cell width that is only a floor for its column.
 
 use anyrender::render_to_buffer;
 use anyrender_vello_cpu::VelloCpuImageRenderer;
@@ -158,5 +158,40 @@ fn valign_bottom_anchors_a_cell_to_its_bottom() {
         pixel(&buffer, 30, 100),
         RED,
         "the content sits at the bottom"
+    );
+}
+
+#[test]
+fn a_cell_width_narrower_than_its_content_widens_the_column() {
+    let buffer = render(&page(
+        r#"<table cellpadding="0" cellspacing="0" style="width:200px"><tr>
+            <td style="width:10px"><div style="width:100px; height:40px; background:#ff0000"></div></td>
+            <td style="width:100%; background:#0000ff"><div style="height:40px"></div></td>
+        </tr></table>"#,
+    ));
+    assert_eq!(
+        pixel(&buffer, 50, 20),
+        RED,
+        "the column grows to the content's 100px rather than staying at 10px"
+    );
+    assert_eq!(
+        pixel(&buffer, 150, 20),
+        BLUE,
+        "the next column starts after the widened one"
+    );
+}
+
+#[test]
+fn a_cell_width_still_sizes_a_fixed_layout_column() {
+    let buffer = render(&page(
+        r#"<table cellpadding="0" cellspacing="0" style="width:200px; table-layout:fixed"><tr>
+            <td style="width:10px; overflow:hidden"><div style="width:100px; height:40px; background:#ff0000"></div></td>
+            <td style="background:#0000ff"><div style="height:40px"></div></td>
+        </tr></table>"#,
+    ));
+    assert_eq!(
+        pixel(&buffer, 50, 20),
+        BLUE,
+        "fixed layout ignores the content, so the second column starts at 10px"
     );
 }
