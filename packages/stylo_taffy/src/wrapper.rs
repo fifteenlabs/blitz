@@ -250,10 +250,18 @@ impl<T: Deref<Target = ComputedValues>> taffy::CoreStyle for TaffyStyloStyle<T> 
     #[inline]
     fn size(&self) -> taffy::Size<taffy::Dimension> {
         let position_styles = self.style.get_position();
-        self.size(taffy::Size {
+        let mut size = self.size(taffy::Size {
             width: convert::dimension(&position_styles.width),
             height: convert::dimension(&position_styles.height),
-        })
+        });
+        // A table cell's inline size is a hint for its column, which the table has
+        // already taken into account; the table then lays the cell out at the
+        // column's width. Measuring the cell must report its content, not the hint,
+        // or a column could never grow past it.
+        if self.effective_display().inside() == stylo::DisplayInside::TableCell {
+            size.width = taffy::Dimension::auto();
+        }
+        size
     }
 
     #[inline]

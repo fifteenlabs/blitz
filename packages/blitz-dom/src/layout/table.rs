@@ -328,6 +328,19 @@ pub(crate) fn build_table_context(
     }
     let num_columns = cursor.num_columns.max(column_sizes.len() as u16);
     column_sizes.resize(num_columns as usize, remaining_column);
+    if !is_fixed {
+        // In the auto table layout algorithm a column's specified width is only a
+        // lower bound: a column is never narrower than the min-content width of its
+        // cells. `minmax(min-content, <width>)` sizes the track to the larger of the
+        // two (an `auto` minimum would be clamped to the fixed maximum).
+        for column in column_sizes.iter_mut() {
+            if column.min.into_raw().tag() == taffy::CompactLength::LENGTH_TAG
+                && column.max.into_raw().tag() == taffy::CompactLength::LENGTH_TAG
+            {
+                *column = style_helpers::minmax(style_helpers::min_content(), column.max);
+            }
+        }
+    }
     if is_fixed {
         // In the fixed table layout algorithm, percentage column widths resolve against
         // the table's content width minus the horizontal border-spacing between columns,
