@@ -1,7 +1,8 @@
 //! Table layouts HTML email depends on, checked by the pixels they paint: block-level
 //! children of a table stacking as anonymous cells, collapsed borders taking each edge's
 //! own colour and the rows' separators, `valign`, a fixed-width cell beside an auto
-//! one sizing its row, and a cell width that is only a floor for its column.
+//! one sizing its row, a cell width that is only a floor for its column, and rows
+//! restyled as `display: table` by a responsive breakpoint.
 
 use anyrender::render_to_buffer;
 use anyrender_vello_cpu::VelloCpuImageRenderer;
@@ -238,4 +239,43 @@ fn a_baseline_aligned_table_cell_inside_an_inline_sits_on_its_text() {
         </a></div>"#,
     );
     assert_eq!(rect("#cell").0, rect("#block").0);
+}
+
+#[test]
+fn a_row_restyled_as_a_table_keeps_its_cells() {
+    let buffer = render(&page(
+        r#"<style>table tr { display: table; width: 200px }</style>
+        <table cellpadding="0" cellspacing="0" style="width:200px"><tr>
+            <td style="width:100px; height:40px; background:#ff0000"></td>
+            <td style="width:100px; height:40px; background:#0000ff"></td>
+        </tr></table>"#,
+    ));
+    assert_eq!(
+        pixel(&buffer, 50, 20),
+        RED,
+        "the row is wrapped in an anonymous cell rather than dropped"
+    );
+    assert_eq!(
+        pixel(&buffer, 150, 20),
+        BLUE,
+        "the cells sit side by side in the row's own anonymous row"
+    );
+}
+
+#[test]
+fn rows_restyled_as_tables_stack_and_keep_their_cells() {
+    let buffer = render(&page(
+        r#"<style>table tbody tr { display: table; width: 100% }</style>
+        <table cellpadding="0" cellspacing="0" style="width:200px">
+            <tr><td style="height:40px; background:#ff0000">&nbsp;</td></tr>
+            <tr><td style="height:40px; background:#0000ff">&nbsp;</td></tr>
+        </table>"#,
+    ));
+    assert_eq!(pixel(&buffer, 100, 20), RED, "the first row's cell");
+    assert_eq!(
+        pixel(&buffer, 100, 60),
+        BLUE,
+        "the second row stacks under the first"
+    );
+    assert_eq!(pixel(&buffer, 220, 20), WHITE, "the rows keep the table's width");
 }

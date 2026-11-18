@@ -630,11 +630,10 @@ fn collect_table_cells(
         | DisplayInside::TableHeaderGroup
         | DisplayInside::TableFooterGroup
         | DisplayInside::Contents => {
+            node.remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
             let first_row = rows.len();
             let children = std::mem::take(&mut doc.nodes[node_id].children);
             for child_id in children.iter().copied() {
-                doc.nodes[child_id]
-                    .remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
                 collect_table_cells(
                     doc,
                     child_id,
@@ -814,12 +813,14 @@ fn collect_table_cells(
         | DisplayInside::FlowRoot
         | DisplayInside::Flex
         | DisplayInside::Grid
-        | DisplayInside::GridLanes => {
+        | DisplayInside::GridLanes
+        | DisplayInside::Table => {
             // CSS 2.2 §17.2.1: a block-level box whose parent is a table
-            // or table-row gets wrapped in an anonymous table-cell. HTML
-            // emails rely on this: responsive templates switch cells to
-            // `display:block` below a width breakpoint to stack table
-            // columns vertically. Approximate the anonymous cell by
+            // or table-row gets wrapped in an anonymous table-cell, and so
+            // does a nested table box. HTML emails rely on this: responsive
+            // templates switch cells to `display:block` below a width
+            // breakpoint to stack table columns vertically, and some switch
+            // whole rows to `display:table`. Approximate the anonymous cell by
             // placing each such box on its own full-width grid row
             // (upstream drops these boxes entirely, collapsing such emails
             // to a blank sliver). The box is not placed through the column
@@ -850,7 +851,7 @@ fn collect_table_cells(
                 style,
             });
         }
-        DisplayInside::TableColumnGroup | DisplayInside::TableColumn | DisplayInside::Table => {
+        DisplayInside::TableColumnGroup | DisplayInside::TableColumn => {
             node.remove_damage(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
             //Ignore
         }
